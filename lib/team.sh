@@ -174,15 +174,17 @@ team_list() {
 
     print_table "#|이름|멤버 수" "${rows[@]}"
 
-    # 상세 보기 여부
-    local choice
-    while true; do
-        read -rp "  상세 보기할 팀 번호 (0: 돌아가기): " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 0 && choice <= ${#teams[@]} )); then
-            break
-        fi
-        error "0~${#teams[@]} 사이의 숫자를 입력하세요."
+    # 상세 보기 - 화살표 메뉴
+    local options=()
+    for i in "${!teams[@]}"; do
+        local name="${teams[$i]}"
+        local members=()
+        _get_team_members "$name" members
+        options+=("${name} (${#members[@]}명)")
     done
+
+    menu_select "상세 보기" "${options[@]}"
+    local choice=$?
 
     if [[ $choice -eq 0 ]]; then
         return 0
@@ -331,35 +333,20 @@ team_remove_ip() {
         return 0
     fi
 
-    # 멤버 목록 출력
-    echo ""
-    echo -e "  ${BOLD}현재 멤버:${RESET}"
-    local detail_rows=()
-    local idx=1
+    # 멤버 선택 - 화살표 메뉴
+    local options=()
     for entry in "${members[@]}"; do
         local ip comment
         ip="${entry%%|*}"
         comment="${entry#*|}"
         comment="$(unescape_comment "$comment")"
-        detail_rows+=("${idx}|${ip}|${comment}")
-        idx=$((idx + 1))
+        options+=("${ip}  ${comment}")
     done
 
-    print_table "#|IP / CIDR|설명" "${detail_rows[@]}"
-
-    # 제거할 번호 선택
-    local choice
-    while true; do
-        read -rp "  제거할 번호 (0: 취소): " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 0 && choice <= ${#members[@]} )); then
-            break
-        fi
-        error "0~${#members[@]} 사이의 숫자를 입력하세요."
-    done
+    menu_select "제거할 IP 선택 (${team})" "${options[@]}"
+    local choice=$?
 
     if [[ $choice -eq 0 ]]; then
-        info "취소되었습니다."
-        pause
         return 0
     fi
 
