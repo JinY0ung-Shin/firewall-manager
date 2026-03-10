@@ -128,6 +128,7 @@ menu_select() {
     local title="$1"; shift
     local options=("$@")
 
+    clear_screen
     print_header "$title"
 
     # 옵션 + 돌아가기를 합쳐서 배열 구성
