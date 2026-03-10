@@ -49,60 +49,6 @@ show_status() {
         echo -e "  저장된 규칙:      ${YELLOW}!${RESET} 저장된 규칙 없음"
     fi
 
-    # ── 부팅 시 복원 ──
-    local fw_restore_status fw_docker_status
-
-    if systemctl is-enabled fw-restore.service &>/dev/null; then
-        fw_restore_status=$(systemctl is-enabled fw-restore.service 2>/dev/null)
-    else
-        fw_restore_status="not-found"
-    fi
-
-    if [[ "$fw_restore_status" == "enabled" ]]; then
-        echo -e "  부팅 시 복원:     ${GREEN}✓${RESET} fw-restore.service (INPUT)"
-    elif [[ "$fw_restore_status" == "not-found" ]]; then
-        echo -e "  부팅 시 복원:     ${DIM}-${RESET} fw-restore.service 미설치"
-    else
-        echo -e "  부팅 시 복원:     ${YELLOW}!${RESET} fw-restore.service 비활성"
-    fi
-
-    if systemctl is-enabled fw-docker-rules.service &>/dev/null; then
-        fw_docker_status=$(systemctl is-enabled fw-docker-rules.service 2>/dev/null)
-    else
-        fw_docker_status="not-found"
-    fi
-
-    if [[ "$fw_docker_status" == "enabled" ]]; then
-        echo -e "                   ${GREEN}✓${RESET} fw-docker-rules.service (DOCKER-USER)"
-    elif [[ "$fw_docker_status" == "not-found" ]]; then
-        echo -e "                   ${DIM}-${RESET} fw-docker-rules.service 미설치"
-    else
-        echo -e "                   ${YELLOW}!${RESET} fw-docker-rules.service 비활성"
-    fi
-
-    # ── 충돌 도구 ──
-    local conflict_parts=()
-
-    if systemctl is-active --quiet ufw 2>/dev/null; then
-        conflict_parts+=("${RED}ufw 활성 ✗${RESET}")
-    elif systemctl list-unit-files ufw.service &>/dev/null 2>&1 && systemctl list-unit-files ufw.service 2>/dev/null | grep -q ufw; then
-        conflict_parts+=("ufw 비활성 ${GREEN}✓${RESET}")
-    else
-        conflict_parts+=("ufw 미설치 ${GREEN}✓${RESET}")
-    fi
-
-    if systemctl is-active --quiet firewalld 2>/dev/null; then
-        conflict_parts+=("${RED}firewalld 활성 ✗${RESET}")
-    elif systemctl list-unit-files firewalld.service &>/dev/null 2>&1 && systemctl list-unit-files firewalld.service 2>/dev/null | grep -q firewalld; then
-        conflict_parts+=("firewalld 비활성 ${GREEN}✓${RESET}")
-    else
-        conflict_parts+=("firewalld 미설치 ${GREEN}✓${RESET}")
-    fi
-
-    local IFS=', '
-    echo -e "  충돌 도구:       ${conflict_parts[*]}"
-    unset IFS
-
     # ── 체인 요약 ──
     echo -e "${DIM}${line_mid}${RESET}"
     echo -e "  ${BOLD}체인:${RESET}"

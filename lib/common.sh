@@ -342,17 +342,6 @@ check_dependencies() {
     fi
 }
 
-detect_conflicting_tools() {
-    if systemctl is-active --quiet ufw 2>/dev/null; then
-        warn "ufw가 활성화되어 있습니다. 충돌할 수 있으므로 비활성화를 권장합니다."
-        info "비활성화: sudo ufw disable"
-    fi
-    if systemctl is-active --quiet firewalld 2>/dev/null; then
-        warn "firewalld가 활성화되어 있습니다. 충돌할 수 있으므로 비활성화를 권장합니다."
-        info "비활성화: sudo systemctl stop firewalld && sudo systemctl disable firewalld"
-    fi
-}
-
 detect_iptables_backend() {
     # iptables-nft vs iptables-legacy 감지
     local version

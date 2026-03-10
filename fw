@@ -88,7 +88,6 @@ check_dependencies
 init_config_dir
 detect_iptables_backend
 get_ssh_info
-detect_conflicting_tools
 
 # 모듈 로딩
 source "${LIB_DIR}/rule.sh"
