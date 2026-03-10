@@ -1,0 +1,10 @@
+# config data (runtime generated)
+config/
+
+# AI session files
+.ccb/
+
+# temp files
+*.tmp
+*.swp
+*~
