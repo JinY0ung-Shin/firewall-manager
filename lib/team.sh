@@ -94,9 +94,10 @@ _get_team_members() {
     done < "$conf"
 }
 
-# 인터랙티브 팀 선택 - 번호가 매겨진 팀 목록을 보여주고 선택받음
-# 반환: 선택된 팀 이름을 stdout으로 출력, 실패 시 return 1
+# 인터랙티브 팀 선택 - 화살표 메뉴로 팀을 선택
+# 사용: local team; if ! _select_team team; then ... fi
 _select_team() {
+    local -n _selected_team=$1
     local teams=()
     _get_team_list teams
 
@@ -123,7 +124,7 @@ _select_team() {
         return 1
     fi
 
-    echo "${teams[$((choice - 1))]}"
+    _selected_team="${teams[$((choice - 1))]}"
     return 0
 }
 
@@ -151,6 +152,7 @@ team_menu() {
 }
 
 team_list() {
+    clear_screen
     print_header "팀 목록"
 
     local teams=()
@@ -183,7 +185,7 @@ team_list() {
         options+=("${name} (${#members[@]}명)")
     done
 
-    menu_select "상세 보기" "${options[@]}"
+    prompt_choice "상세 보기할 팀 선택" "${options[@]}"
     local choice=$?
 
     if [[ $choice -eq 0 ]]; then
@@ -220,6 +222,7 @@ team_list() {
 }
 
 team_create() {
+    clear_screen
     print_header "팀 만들기"
 
     if ! read_valid_team_name "? 팀 이름 (영문, 숫자, 하이픈, 빈 입력=취소)"; then
@@ -271,7 +274,7 @@ EOF
 
 team_add_ip() {
     local team
-    if ! team=$(_select_team); then
+    if ! _select_team team; then
         pause
         return 0
     fi
@@ -324,10 +327,13 @@ team_add_ip() {
 
 team_remove_ip() {
     local team
-    if ! team=$(_select_team); then
+    if ! _select_team team; then
         pause
         return 0
     fi
+
+    clear_screen
+    print_header "팀에서 IP 제거 (${team})"
 
     local members=()
     _get_team_members "$team" members
@@ -395,10 +401,13 @@ team_remove_ip() {
 
 team_delete() {
     local team
-    if ! team=$(_select_team); then
+    if ! _select_team team; then
         pause
         return 0
     fi
+
+    clear_screen
+    print_header "팀 삭제 (${team})"
 
     local members=()
     _get_team_members "$team" members

@@ -247,8 +247,15 @@ prompt_choice() {
     echo -e "  ${BOLD}?${RESET} ${question}"
     echo ""
 
-    _arrow_menu 0 "${options[@]}"
+    local items=("${options[@]}")
+    items+=("${DIM}<- 돌아가기${RESET}")
+
+    _arrow_menu 0 "${items[@]}"
     local idx=$?
+
+    if (( idx == ${#options[@]} )); then
+        return 0
+    fi
     return $((idx + 1))
 }
 

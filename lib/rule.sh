@@ -78,6 +78,7 @@ rule_list() {
     # 체인 선택
     prompt_choice "체인 선택" "INPUT" "DOCKER-USER"
     local chain_choice=$?
+    if [[ $chain_choice -eq 0 ]]; then return; fi
     local chain
     case $chain_choice in
         1) chain="INPUT" ;;
@@ -112,6 +113,7 @@ rule_add() {
     # Step 1: 체인 선택
     prompt_choice "체인 선택" "INPUT" "DOCKER-USER"
     local chain_choice=$?
+    if [[ $chain_choice -eq 0 ]]; then return; fi
     local chain
     case $chain_choice in
         1) chain="INPUT" ;;
@@ -132,6 +134,7 @@ rule_add() {
     # Step 2: 액션 선택
     prompt_choice "액션 선택" "ACCEPT (허용)" "DROP (차단)" "REJECT (거부)"
     local action_choice=$?
+    if [[ $action_choice -eq 0 ]]; then return; fi
     local action
     case $action_choice in
         1) action="ACCEPT" ;;
@@ -149,6 +152,7 @@ rule_add() {
 
     prompt_choice "소스 지정" "IP 주소 직접 입력" "팀(ipset)에서 선택" "모든 소스 (0.0.0.0/0)"
     local src_choice=$?
+    if [[ $src_choice -eq 0 ]]; then return 0; fi
 
     case $src_choice in
         1)
@@ -180,6 +184,7 @@ rule_add() {
                 echo ""
                 prompt_choice "팀 선택" "${ipsets[@]}"
                 local team_choice=$?
+                if [[ $team_choice -eq 0 ]]; then return 0; fi
                 team_name="${ipsets[$((team_choice - 1))]}"
                 source="$team_name"
                 source_display="team:${team_name}"
@@ -206,6 +211,7 @@ rule_add() {
         echo ""
         prompt_choice "프로토콜" "tcp" "udp" "all"
         local proto_choice=$?
+        if [[ $proto_choice -eq 0 ]]; then return 0; fi
         case $proto_choice in
             1) proto="tcp" ;;
             2) proto="udp" ;;
@@ -409,6 +415,7 @@ rule_remove() {
     # 체인 선택
     prompt_choice "체인 선택" "INPUT" "DOCKER-USER"
     local chain_choice=$?
+    if [[ $chain_choice -eq 0 ]]; then return; fi
     local chain
     case $chain_choice in
         1) chain="INPUT" ;;
@@ -438,8 +445,10 @@ rule_remove() {
     # 삭제할 규칙 번호 입력
     local rule_num
     while true; do
-        prompt_input "삭제할 규칙 번호"
-        rule_num="$REPLY"
+        read -rp "  삭제할 규칙 번호 (빈 입력=취소): " rule_num
+        if [[ -z "$rule_num" ]]; then
+            return
+        fi
         if [[ "$rule_num" =~ ^[0-9]+$ ]] && (( rule_num >= 1 && rule_num <= ${#_parsed_rows[@]} )); then
             break
         fi

@@ -34,9 +34,17 @@ sync_teams() {
 
     # live ipset 기반 팀 목록 (hash:net 타입만)
     local -a live_teams=()
-    while IFS= read -r setname; do
-        [[ -n "$setname" ]] && live_teams+=("$setname")
-    done <<< "$(ipset list -n 2>/dev/null)"
+    local _setname=""
+    while IFS= read -r _line; do
+        if [[ "$_line" == "Name: "* ]]; then
+            _setname="${_line#Name: }"
+        elif [[ "$_line" == "Type: "* && -n "$_setname" ]]; then
+            if [[ "${_line#Type: }" == "hash:net" ]]; then
+                live_teams+=("$_setname")
+            fi
+            _setname=""
+        fi
+    done <<< "$(ipset list -t 2>/dev/null)"
 
     # 모든 팀 이름 합집합
     local -a all_teams=()
@@ -132,6 +140,8 @@ sync_teams() {
         "live → conf (현재 ipset 상태를 conf에 저장)" \
         "conf → live (conf 기준으로 ipset 복원)"
     local direction=$?
+
+    if [[ $direction -eq 0 ]]; then pause; return 0; fi
 
     echo ""
 
@@ -344,6 +354,8 @@ sync_rules() {
         "live → conf (현재 iptables 상태를 파일에 저장)" \
         "conf → live (저장된 규칙을 iptables에 적용)"
     local direction=$?
+
+    if [[ $direction -eq 0 ]]; then pause; return 0; fi
 
     echo ""
 

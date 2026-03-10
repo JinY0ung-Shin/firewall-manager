@@ -619,27 +619,12 @@ persist_restore() {
     fi
 
     # 백업 목록 표시 및 선택
-    echo -e "  ${BOLD}사용 가능한 백업:${RESET}"
-    for i in "${!backup_names[@]}"; do
-        echo -e "    ${BOLD}$((i + 1))${RESET})  ${backup_names[$i]}"
-    done
-    echo ""
-    echo -e "    ${DIM}0)  <- 돌아가기${RESET}"
-    echo ""
+    prompt_choice "복원할 백업 선택" "${backup_names[@]}"
+    local choice=$?
 
-    local choice
-    while true; do
-        read -rp "  복원할 백업 선택: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]]; then
-            if (( choice == 0 )); then
-                return 0
-            fi
-            if (( choice >= 1 && choice <= ${#backup_dirs[@]} )); then
-                break
-            fi
-        fi
-        error "0~${#backup_dirs[@]} 사이의 숫자를 입력하세요."
-    done
+    if [[ $choice -eq 0 ]]; then
+        return 0
+    fi
 
     local selected_dir="${backup_dirs[$((choice - 1))]}"
     local selected_name="${backup_names[$((choice - 1))]}"
