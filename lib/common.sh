@@ -61,51 +61,109 @@ preview_cmd() {
     echo ""
 }
 
+# ── 방향키 메뉴 (공통 엔진) ───────────────────────
+# _arrow_menu selected_index "옵션1" "옵션2" ... "마지막옵션(돌아가기/종료)"
+# 커서를 숨기고, 방향키로 이동, Enter로 선택
+# 반환: 선택된 인덱스 (0부터)
+_arrow_menu() {
+    local cur=$1; shift
+    local items=("$@")
+    local total=${#items[@]}
+
+    # 커서 숨기기
+    printf '\033[?25l'
+    # 종료 시 커서 복원
+    trap 'printf "\033[?25h"' RETURN
+
+    # 초기 렌더링
+    _arrow_menu_render "$cur" "${items[@]}"
+
+    while true; do
+        # 키 입력 읽기
+        local key
+        IFS= read -rsn1 key
+
+        if [[ "$key" == $'\x1b' ]]; then
+            read -rsn2 -t 0.01 key
+            case "$key" in
+                '[A') (( cur > 0 )) && cur=$((cur - 1)) ;;           # Up
+                '[B') (( cur < total - 1 )) && cur=$((cur + 1)) ;;   # Down
+            esac
+        elif [[ "$key" == "" ]]; then
+            # Enter
+            # 렌더링 영역 지우기
+            printf '\033[%dA' "$total"
+            for (( i=0; i<total; i++ )); do
+                printf '\033[2K\n'
+            done
+            printf '\033[%dA' "$total"
+            printf '\033[?25h'
+            return "$cur"
+        fi
+
+        # 다시 그리기: 위로 올라가서 덮어쓰기
+        printf '\033[%dA' "$total"
+        _arrow_menu_render "$cur" "${items[@]}"
+    done
+}
+
+_arrow_menu_render() {
+    local cur=$1; shift
+    local items=("$@")
+
+    for i in "${!items[@]}"; do
+        printf '\033[2K'  # 줄 지우기
+        if [[ $i -eq $cur ]]; then
+            echo -e "  ${CYAN}▸${RESET} ${BOLD}${items[$i]}${RESET}"
+        else
+            echo -e "    ${items[$i]}"
+        fi
+    done
+}
+
 # ── 메뉴 선택 ────────────────────────────────────
 # menu_select "제목" "옵션1" "옵션2" ...
 # 반환: 선택된 번호 (1부터), 0 = 돌아가기
 menu_select() {
     local title="$1"; shift
     local options=("$@")
-    local choice
 
     print_header "$title"
 
-    for i in "${!options[@]}"; do
-        echo -e "    ${BOLD}$((i + 1))${RESET})  ${options[$i]}"
+    # 옵션 + 돌아가기를 합쳐서 배열 구성
+    local items=()
+    for opt in "${options[@]}"; do
+        items+=("$opt")
     done
-    echo ""
-    echo -e "    ${DIM}0)  <- 돌아가기${RESET}"
-    echo ""
+    items+=("${DIM}<- 돌아가기${RESET}")
 
-    while true; do
-        read -rp "  선택: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 0 && choice <= ${#options[@]} )); then
-            return "$choice"
-        fi
-        error "0~${#options[@]} 사이의 숫자를 입력하세요."
-    done
+    _arrow_menu 0 "${items[@]}"
+    local idx=$?
+
+    # 마지막 항목 = 돌아가기 = 0
+    if (( idx == ${#options[@]} )); then
+        return 0
+    fi
+    return $((idx + 1))
 }
 
 # 메인 메뉴 전용 (종료 표시)
 menu_select_main() {
     local options=("$@")
-    local choice
 
-    for i in "${!options[@]}"; do
-        echo -e "    ${BOLD}$((i + 1))${RESET})  ${options[$i]}"
+    local items=()
+    for opt in "${options[@]}"; do
+        items+=("$opt")
     done
-    echo ""
-    echo -e "    ${DIM}0)  종료${RESET}"
-    echo ""
+    items+=("${DIM}종료${RESET}")
 
-    while true; do
-        read -rp "  선택: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 0 && choice <= ${#options[@]} )); then
-            return "$choice"
-        fi
-        error "0~${#options[@]} 사이의 숫자를 입력하세요."
-    done
+    _arrow_menu 0 "${items[@]}"
+    local idx=$?
+
+    if (( idx == ${#options[@]} )); then
+        return 0
+    fi
+    return $((idx + 1))
 }
 
 # ── 입력 프롬프트 ────────────────────────────────
@@ -184,20 +242,13 @@ prompt_confirm_critical() {
 prompt_choice() {
     local question="$1"; shift
     local options=("$@")
-    local choice
 
     echo -e "  ${BOLD}?${RESET} ${question}"
-    for i in "${!options[@]}"; do
-        echo -e "    ${BOLD}$((i + 1))${RESET})  ${options[$i]}"
-    done
+    echo ""
 
-    while true; do
-        read -rp "  선택: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
-            return "$choice"
-        fi
-        error "1~${#options[@]} 사이의 숫자를 입력하세요."
-    done
+    _arrow_menu 0 "${options[@]}"
+    local idx=$?
+    return $((idx + 1))
 }
 
 # ── 테이블 출력 ──────────────────────────────────
