@@ -96,6 +96,9 @@ source "${LIB_DIR}/persist.sh"
 source "${LIB_DIR}/status.sh"
 source "${LIB_DIR}/sync.sh"
 
+# ── 기존 ipset 자동 가져오기 ────────────────────
+auto_import_teams
+
 # ── 메인 메뉴 루프 ──────────────────────────────
 main_menu() {
     while true; do

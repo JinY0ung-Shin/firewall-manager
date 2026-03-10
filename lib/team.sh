@@ -2,6 +2,55 @@
 # team.sh - ipset 팀 관리 (interactive 흐름)
 # common.sh, validators.sh가 이미 source된 상태에서 사용
 
+# ── 자동 가져오기 ────────────────────────────────
+
+# 시작 시 기존 ipset 셋(hash:net)을 conf 파일로 자동 가져오기
+auto_import_teams() {
+    local teams_dir="${CONFIG_DIR}/teams"
+    local imported=0
+    local setname=""
+
+    while IFS= read -r line; do
+        if [[ "$line" == "Name: "* ]]; then
+            setname="${line#Name: }"
+        elif [[ "$line" == "Type: "* && -n "$setname" ]]; then
+            local settype="${line#Type: }"
+            if [[ "$settype" == "hash:net" && ! -f "${teams_dir}/${setname}.conf" ]]; then
+                # conf 파일 생성
+                local tmpfile
+                tmpfile="$(mktemp)"
+                echo "# Team: ${setname}" > "$tmpfile"
+                echo "# Imported: $(date '+%Y-%m-%d %H:%M:%S')" >> "$tmpfile"
+
+                # live ipset에서 멤버 가져오기
+                while IFS= read -r entry; do
+                    [[ -z "$entry" ]] && continue
+                    local ip comment
+                    ip=$(echo "$entry" | awk '{print $1}')
+                    comment=""
+                    if [[ "$entry" == *"comment \""* ]]; then
+                        comment=$(echo "$entry" | sed -n 's/.*comment "\(.*\)"/\1/p')
+                    fi
+                    comment="${comment//|/\\|}"
+                    if [[ -n "$comment" ]]; then
+                        echo "${ip}|${comment}" >> "$tmpfile"
+                    else
+                        echo "${ip}|imported" >> "$tmpfile"
+                    fi
+                done <<< "$(ipset list "$setname" 2>/dev/null | grep -E '^[0-9]')"
+
+                mv "$tmpfile" "${teams_dir}/${setname}.conf"
+                imported=$((imported + 1))
+            fi
+            setname=""
+        fi
+    done <<< "$(ipset list -t 2>/dev/null)"
+
+    if [[ $imported -gt 0 ]]; then
+        info "기존 ipset ${imported}개를 자동으로 가져왔습니다."
+    fi
+}
+
 # ── 헬퍼 함수 ────────────────────────────────────
 
 # 팀 목록 배열 반환 (teams/*.conf 기반)
