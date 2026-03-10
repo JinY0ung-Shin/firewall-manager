@@ -439,21 +439,19 @@ rule_remove() {
         return
     fi
 
-    echo -e "  ${BOLD}현재 규칙:${RESET}"
-    print_table "#|Action|Proto|Source|Port|Comment" "${_parsed_rows[@]}"
-
-    # 삭제할 규칙 번호 입력
-    local rule_num
-    while true; do
-        read -rp "  삭제할 규칙 번호 (빈 입력=취소): " rule_num
-        if [[ -z "$rule_num" ]]; then
-            return
-        fi
-        if [[ "$rule_num" =~ ^[0-9]+$ ]] && (( rule_num >= 1 && rule_num <= ${#_parsed_rows[@]} )); then
-            break
-        fi
-        error "1~${#_parsed_rows[@]} 사이의 숫자를 입력하세요."
+    # 규칙 선택 - 화살표 메뉴
+    local options=()
+    for row in "${_parsed_rows[@]}"; do
+        # "번호|Action|Proto|Source|Port|Comment" → 표시용 문자열
+        IFS='|' read -ra cols <<< "$row"
+        options+=("#${cols[0]} ${cols[1]} ${cols[3]} :${cols[4]} (${cols[2]}) ${cols[5]}")
     done
+
+    prompt_choice "삭제할 규칙 선택 (${chain})" "${options[@]}"
+    local rule_num=$?
+    if [[ $rule_num -eq 0 ]]; then
+        return
+    fi
 
     # 선택된 규칙의 원본 줄 가져오기
     local raw_rule="${_parsed_raw[$((rule_num - 1))]}"
