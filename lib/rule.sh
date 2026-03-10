@@ -153,7 +153,9 @@ rule_add() {
     case $src_choice in
         1)
             source_type="ip"
-            read_valid_ip "IP 주소 (CIDR 가능)"
+            if ! read_valid_ip "IP 주소 (CIDR 가능, 빈 입력=취소)"; then
+                return 0
+            fi
             source="$REPLY"
             source_display="$source"
             ;;
@@ -169,7 +171,9 @@ rule_add() {
                 warn "등록된 팀(ipset)이 없습니다."
                 info "IP 주소를 직접 입력합니다."
                 source_type="ip"
-                read_valid_ip "IP 주소 (CIDR 가능)"
+                if ! read_valid_ip "IP 주소 (CIDR 가능, 빈 입력=취소)"; then
+                    return 0
+                fi
                 source="$REPLY"
                 source_display="$source"
             else
@@ -191,7 +195,9 @@ rule_add() {
     echo ""
 
     # Step 4: 포트 번호
-    read_valid_port "포트 번호 (전체는 'all')"
+    if ! read_valid_port "포트 번호 (전체는 'all', 빈 입력=취소)"; then
+        return 0
+    fi
     local port="$REPLY"
 
     # Step 5: 프로토콜 (포트가 all이 아닐 때만)

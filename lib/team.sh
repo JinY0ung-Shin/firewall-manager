@@ -222,7 +222,9 @@ team_list() {
 team_create() {
     print_header "팀 만들기"
 
-    read_valid_team_name "? 팀 이름 (영문, 숫자, 하이픈)"
+    if ! read_valid_team_name "? 팀 이름 (영문, 숫자, 하이픈, 빈 입력=취소)"; then
+        return 0
+    fi
     local name="$REPLY"
 
     # 이미 존재하는 ipset인지 확인
@@ -268,15 +270,18 @@ EOF
 }
 
 team_add_ip() {
-    print_header "팀에 IP 추가"
-
     local team
     if ! team=$(_select_team); then
         pause
         return 0
     fi
 
-    read_valid_ip "? IP 주소 (CIDR 가능)"
+    clear_screen
+    print_header "팀에 IP 추가 (${team})"
+
+    if ! read_valid_ip "? IP 주소 (CIDR 가능, 빈 입력=취소)"; then
+        return 0
+    fi
     local ip="$REPLY"
 
     # 이미 해당 IP가 팀에 존재하는지 확인
@@ -287,7 +292,9 @@ team_add_ip() {
         return 1
     fi
 
-    read_valid_comment "? 설명 (누구/무엇인지, 필수)"
+    if ! read_valid_comment "? 설명 (누구/무엇인지, 빈 입력=취소)"; then
+        return 0
+    fi
     local comment="$REPLY"
 
     # 언이스케이프된 comment로 ipset 명령어 구성 (표시용)
@@ -316,8 +323,6 @@ team_add_ip() {
 }
 
 team_remove_ip() {
-    print_header "팀에서 IP 제거"
-
     local team
     if ! team=$(_select_team); then
         pause
@@ -389,8 +394,6 @@ team_remove_ip() {
 }
 
 team_delete() {
-    print_header "팀 삭제"
-
     local team
     if ! team=$(_select_team); then
         pause

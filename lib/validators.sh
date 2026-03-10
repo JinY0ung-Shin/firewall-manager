@@ -353,11 +353,14 @@ check_ipset_refs() {
 
 # ── 입력 루프 (검증 포함) ────────────────────────
 
-# 유효한 IP를 받을 때까지 반복
+# 유효한 IP를 받을 때까지 반복 (빈 입력 = 취소, return 1)
 read_valid_ip() {
-    local prompt="${1:-? IP 주소 (CIDR 가능)}"
+    local prompt="${1:-? IP 주소 (CIDR 가능, 빈 입력=취소)}"
     while true; do
-        prompt_input "$prompt"
+        read -rp "  ${prompt}: " REPLY
+        if [[ -z "$REPLY" ]]; then
+            return 1
+        fi
         if validate_ip "$REPLY"; then
             return 0
         fi
@@ -365,11 +368,14 @@ read_valid_ip() {
     done
 }
 
-# 유효한 포트를 받을 때까지 반복
+# 유효한 포트를 받을 때까지 반복 (빈 입력 = 취소, return 1)
 read_valid_port() {
-    local prompt="${1:-? 포트 번호 (전체는 'all')}"
+    local prompt="${1:-? 포트 번호 (전체는 'all', 빈 입력=취소)}"
     while true; do
-        prompt_input "$prompt"
+        read -rp "  ${prompt}: " REPLY
+        if [[ -z "$REPLY" ]]; then
+            return 1
+        fi
         if validate_port "$REPLY"; then
             return 0
         fi
@@ -377,11 +383,14 @@ read_valid_port() {
     done
 }
 
-# 유효한 팀 이름을 받을 때까지 반복
+# 유효한 팀 이름을 받을 때까지 반복 (빈 입력 = 취소, return 1)
 read_valid_team_name() {
-    local prompt="${1:-? 팀 이름 (영문, 숫자, 하이픈)}"
+    local prompt="${1:-? 팀 이름 (영문, 숫자, 하이픈, 빈 입력=취소)}"
     while true; do
-        prompt_input "$prompt"
+        read -rp "  ${prompt}: " REPLY
+        if [[ -z "$REPLY" ]]; then
+            return 1
+        fi
         if validate_team_name "$REPLY"; then
             return 0
         fi
@@ -389,11 +398,14 @@ read_valid_team_name() {
     done
 }
 
-# 유효한 comment를 받을 때까지 반복
+# 유효한 comment를 받을 때까지 반복 (빈 입력 = 취소, return 1)
 read_valid_comment() {
-    local prompt="${1:-? 설명 (누구/무엇인지, 필수)}"
+    local prompt="${1:-? 설명 (누구/무엇인지, 빈 입력=취소)}"
     while true; do
-        prompt_input "$prompt"
+        read -rp "  ${prompt}: " REPLY
+        if [[ -z "$REPLY" ]]; then
+            return 1
+        fi
         if validate_comment "$REPLY"; then
             REPLY=$(escape_comment "$REPLY")
             return 0
