@@ -11,9 +11,9 @@ rule_menu() {
         local choice=$?
 
         case $choice in
-            1) rule_list; pause ;;
-            2) rule_add; pause ;;
-            3) rule_remove; pause ;;
+            1) rule_list ;;
+            2) rule_add ;;
+            3) rule_remove ;;
             0) return ;;
         esac
     done
@@ -104,6 +104,7 @@ rule_list() {
 
     # 테이블 출력
     print_table "#|Action|Proto|Source|Port|Comment" "${_parsed_rows[@]}"
+    pause
 }
 
 # ── 규칙 추가 (Step-by-step Wizard) ───────────────
@@ -356,9 +357,11 @@ rule_add() {
         else
             echo ""
             info "저장하려면 메인 메뉴 → '저장 / 불러오기'를 이용하세요."
+            pause
         fi
     else
         error "규칙 추가에 실패했습니다."
+        pause
     fi
 }
 
@@ -496,4 +499,5 @@ rule_remove() {
     else
         error "규칙 삭제에 실패했습니다."
     fi
+    pause
 }
