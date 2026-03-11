@@ -225,7 +225,7 @@ team_create() {
     clear_screen
     print_header "팀 만들기"
 
-    if ! read_valid_team_name "? 팀 이름 (영문, 숫자, 하이픈, 빈 입력=취소)"; then
+    if ! read_valid_team_name "팀 이름 (영문, 숫자, 하이픈, 빈 입력=취소)"; then
         return 0
     fi
     local name="$REPLY"
@@ -281,7 +281,7 @@ team_add_ip() {
     clear_screen
     print_header "팀에 IP 추가 (${team})"
 
-    if ! read_valid_ip "? IP 주소 (CIDR 가능, 빈 입력=취소)"; then
+    if ! read_valid_ip "IP 주소 (CIDR 가능, 빈 입력=취소)"; then
         return 0
     fi
     local ip="$REPLY"
@@ -289,12 +289,11 @@ team_add_ip() {
     # 이미 해당 IP가 팀에 존재하는지 확인
     local conf="${CONFIG_DIR}/teams/${team}.conf"
     if grep -q "^${ip}|" "$conf" 2>/dev/null; then
-        error "'${ip}'는 이미 '${team}' 팀에 등록되어 있습니다."
-        pause
-        return 1
+        warn "'${ip}'는 이미 '${team}' 팀에 등록되어 있습니다."
+        return 0
     fi
 
-    if ! read_valid_comment "? 설명 (누구/무엇인지, 빈 입력=취소)"; then
+    if ! read_valid_comment "설명 (누구/무엇인지, 빈 입력=취소)"; then
         return 0
     fi
     local comment="$REPLY"
