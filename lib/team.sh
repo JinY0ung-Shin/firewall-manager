@@ -267,9 +267,8 @@ EOF
         info "'팀에 IP 추가'로 멤버를 추가하세요."
     else
         error "ipset create 실패: ${err}"
+        pause
     fi
-
-    pause
 }
 
 team_add_ip() {
@@ -320,9 +319,8 @@ team_add_ip() {
         success "${team} 팀에 ${ip} (${display_comment}) 추가 완료"
     else
         error "ipset add 실패: ${err}"
+        pause
     fi
-
-    pause
 }
 
 team_remove_ip() {
@@ -394,9 +392,8 @@ team_remove_ip() {
         success "${ip} (${display_comment})이(가) ${team}에서 제거되었습니다."
     else
         error "ipset del 실패: ${err}"
+        pause
     fi
-
-    pause
 }
 
 team_delete() {
@@ -555,7 +552,6 @@ team_delete() {
         fi
     else
         error "ipset destroy 실패: ${err}"
+        pause
     fi
-
-    pause
 }
