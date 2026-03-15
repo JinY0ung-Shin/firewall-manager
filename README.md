@@ -88,6 +88,8 @@ git pull
 
 다른 서버로 방화벽 설정을 옮길 때는 보통 아래 흐름으로 사용합니다.
 
+실전형 단계별 가이드는 [MIGRATION.md](/home/jinyoung/firewall-manager/MIGRATION.md) 를 참고하세요.
+
 1. 기존 서버에서 현재 상태를 저장합니다.
 
 ```bash
@@ -162,6 +164,7 @@ sudo ./fw import ./fw-bundle.tar.gz --apply
 
 ## 예시
 
+- 서버 이전 절차를 한 번에 따라가려면 [MIGRATION.md](/home/jinyoung/firewall-manager/MIGRATION.md) 를 참고하세요.
 - 실사용 시나리오는 [examples/SCENARIOS.md](/home/jinyoung/firewall-manager/examples/SCENARIOS.md) 에 정리했습니다.
 - 부팅 시 자동 복원이 필요하면 [examples/fw-restore.service](/home/jinyoung/firewall-manager/examples/fw-restore.service) 예시를 참고할 수 있습니다.
 
@@ -176,6 +179,7 @@ sudo ./fw import ./fw-bundle.tar.gz --apply
 ```
 firewall-manager/
 ├── fw                  # 메인 스크립트 (엔트리포인트)
+├── MIGRATION.md        # 서버 이전 실전 가이드
 ├── examples/
 │   ├── SCENARIOS.md    # 실사용 시나리오 예시
 │   └── fw-restore.service
