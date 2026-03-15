@@ -34,6 +34,75 @@ _bundle_restore_config_snapshot() {
     shopt -u nullglob
 }
 
+_bundle_copy_regular_file() {
+    local src="$1"
+    local dest_dir="$2"
+    local label="$3"
+
+    if [[ -L "$src" ]]; then
+        error "${label} 심볼릭 링크는 허용되지 않습니다: ${src}"
+        return 1
+    fi
+
+    if [[ ! -f "$src" ]]; then
+        error "${label} regular file이 아닙니다: ${src}"
+        return 1
+    fi
+
+    cp -- "$src" "$dest_dir/"
+}
+
+_bundle_copy_team_files() {
+    local src_dir="$1"
+    local dest_dir="$2"
+    local label="$3"
+
+    shopt -s nullglob
+    local team_files=("${src_dir}/"*.conf)
+    if (( ${#team_files[@]} > 0 )); then
+        local f
+        for f in "${team_files[@]}"; do
+            local team_name
+            team_name="$(basename "$f" .conf)"
+            if [[ -L "$f" ]]; then
+                shopt -u nullglob
+                error "${label} 심볼릭 링크는 허용되지 않습니다: ${f}"
+                return 1
+            fi
+            if [[ ! -f "$f" ]]; then
+                shopt -u nullglob
+                error "${label} regular file이 아닙니다: ${f}"
+                return 1
+            fi
+            if ! validate_team_name "$team_name"; then
+                shopt -u nullglob
+                error "${label} 이름이 유효하지 않습니다: $(basename "$f")"
+                return 1
+            fi
+        done
+
+        cp -- "${team_files[@]}" "$dest_dir/"
+    fi
+    shopt -u nullglob
+}
+
+_bundle_validate_dir() {
+    local path="$1"
+    local label="$2"
+
+    if [[ -L "$path" ]]; then
+        error "${label} 심볼릭 링크는 허용되지 않습니다: ${path}"
+        return 1
+    fi
+
+    if [[ ! -d "$path" ]]; then
+        error "${label} 디렉터리가 아닙니다: ${path}"
+        return 1
+    fi
+
+    return 0
+}
+
 _bundle_write_metadata() {
     local metadata_file="$1"
     local input_count=0
@@ -151,7 +220,13 @@ bundle_import() {
     fi
 
     local payload_dir="${extract_dir}"
-    [[ -d "${extract_dir}/config" ]] && payload_dir="${extract_dir}/config"
+    if [[ -d "${extract_dir}/config" ]]; then
+        if ! _bundle_validate_dir "${extract_dir}/config" "번들의 config"; then
+            rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+            return 1
+        fi
+        payload_dir="${extract_dir}/config"
+    fi
 
     # fw export로 생성된 번들은 항상 iptables.rules를 포함해야 함
     if [[ ! -f "${payload_dir}/iptables.rules" ]]; then
@@ -163,14 +238,14 @@ bundle_import() {
     mkdir -p "${stage_dir}/teams"
 
     # 먼저 staging 디렉터리로 복사하여 payload 자체가 온전한지 검증
-    if ! cp "${payload_dir}/iptables.rules" "${stage_dir}/"; then
+    if ! _bundle_copy_regular_file "${payload_dir}/iptables.rules" "${stage_dir}" "번들의 iptables.rules"; then
         rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
         error "번들에서 iptables.rules 복사 실패"
         return 1
     fi
 
     if [[ -f "${payload_dir}/iptables-full.rules" ]]; then
-        if ! cp "${payload_dir}/iptables-full.rules" "${stage_dir}/"; then
+        if ! _bundle_copy_regular_file "${payload_dir}/iptables-full.rules" "${stage_dir}" "번들의 iptables-full.rules"; then
             rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
             error "번들에서 iptables-full.rules 복사 실패"
             return 1
@@ -178,17 +253,16 @@ bundle_import() {
     fi
 
     if [[ -d "${payload_dir}/teams" ]]; then
-        shopt -s nullglob
-        local team_files=("${payload_dir}/teams/"*.conf)
-        if (( ${#team_files[@]} > 0 )); then
-            if ! cp "${team_files[@]}" "${stage_dir}/teams/"; then
-                shopt -u nullglob
-                rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
-                error "번들에서 팀 설정 파일 복사 실패"
-                return 1
-            fi
+        if ! _bundle_validate_dir "${payload_dir}/teams" "번들의 teams"; then
+            rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+            return 1
         fi
-        shopt -u nullglob
+
+        if ! _bundle_copy_team_files "${payload_dir}/teams" "${stage_dir}/teams" "번들의 팀 설정 파일"; then
+            rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+            error "번들에서 팀 설정 파일 복사 실패"
+            return 1
+        fi
     fi
 
     init_config_dir

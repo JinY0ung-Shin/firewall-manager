@@ -423,11 +423,8 @@ team_delete() {
         warn "'${team}' 팀을 참조하는 iptables 규칙이 있습니다:"
         echo -e "$refs"
 
-        if ! prompt_confirm "이 규칙들도 함께 삭제하시겠습니까?"; then
-            info "취소되었습니다. 참조하는 규칙을 먼저 삭제해야 팀을 삭제할 수 있습니다."
-            pause
-            return 0
-        fi
+        local has_ssh_ref=false
+        local has_established_ref=false
 
         # 참조 규칙 수집 (역순 삭제를 위해)
         # check_ipset_refs 출력 형식: "     CHAIN #NUM: RULE_SPEC"
@@ -437,13 +434,34 @@ team_delete() {
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             # 파싱: "     INPUT #2: -m set ..."
-            local chain rule_num
+            local chain rule_num raw_rule
             chain=$(echo "$line" | sed -n 's/^[[:space:]]*\([A-Z_-]*\)[[:space:]]*#\([0-9]*\):.*/\1/p')
             rule_num=$(echo "$line" | sed -n 's/^[[:space:]]*\([A-Z_-]*\)[[:space:]]*#\([0-9]*\):.*/\2/p')
+            raw_rule="${line#*: }"
             if [[ -n "$chain" && -n "$rule_num" ]]; then
                 delete_rules+=("${chain}:${rule_num}")
             fi
+            if detect_ssh_rule "$raw_rule"; then
+                has_ssh_ref=true
+            fi
+            if detect_established_rule "$raw_rule"; then
+                has_established_ref=true
+            fi
         done <<< "$refs"
+
+        if $has_ssh_ref; then
+            warn "이 팀을 삭제하면 현재 SSH 접속을 허용하는 규칙도 함께 삭제될 수 있습니다."
+        fi
+
+        if $has_established_ref; then
+            warn "이 팀을 삭제하면 ESTABLISHED,RELATED 보호 규칙도 함께 삭제될 수 있습니다."
+        fi
+
+        if ! prompt_confirm "이 규칙들도 함께 삭제하시겠습니까?"; then
+            info "취소되었습니다. 참조하는 규칙을 먼저 삭제해야 팀을 삭제할 수 있습니다."
+            pause
+            return 0
+        fi
 
         # 역순 정렬 (같은 체인 내에서 큰 번호부터 삭제해야 인덱스 밀림 방지)
         # 체인별로 분리하여 번호 역순 정렬
@@ -484,6 +502,22 @@ team_delete() {
                 cmds+=("iptables -D ${c} ${n}")
             done
         done
+
+        if $has_ssh_ref; then
+            if ! prompt_confirm_critical "이 팀을 삭제하면 현재 SSH 접속을 허용하는 규칙도 함께 삭제될 수 있습니다."; then
+                info "취소되었습니다."
+                pause
+                return 0
+            fi
+        fi
+
+        if $has_established_ref; then
+            if ! prompt_confirm_critical "이 팀을 삭제하면 ESTABLISHED,RELATED 보호 규칙도 함께 삭제될 수 있습니다."; then
+                info "취소되었습니다."
+                pause
+                return 0
+            fi
+        fi
     fi
 
     # 위험 확인

@@ -21,7 +21,7 @@ _rollback() {
     fi
 
     if [[ -f "$snap_dir/ipset.snap" ]]; then
-        if ipset restore -exist < "$snap_dir/ipset.snap" 2>/dev/null; then
+        if _rollback_ipsets "$snap_dir"; then
             info "ipset 롤백 완료"
         else
             error "ipset 롤백 실패!"
@@ -29,6 +29,62 @@ _rollback() {
     fi
 
     error "복원 실패, 이전 상태로 롤백했습니다"
+    return 0
+}
+
+_remember_touched_team() {
+    local snap_dir="$1"
+    local team_name="$2"
+    local touched_file="${snap_dir}/touched-teams"
+
+    [[ -n "$team_name" ]] || return 0
+    grep -Fxq "$team_name" "$touched_file" 2>/dev/null && return 0
+    echo "$team_name" >> "$touched_file"
+}
+
+_rollback_ipsets() {
+    local snap_dir="$1"
+    local snapshot_sets="${snap_dir}/ipset.sets"
+    local touched_file="${snap_dir}/touched-teams"
+
+    [[ -f "$snapshot_sets" ]] || return 1
+
+    if [[ -f "$touched_file" ]]; then
+        while IFS= read -r team_name; do
+            [[ -n "$team_name" ]] || continue
+
+            if grep -Fxq "$team_name" "$snapshot_sets" 2>/dev/null; then
+                ipset flush "$team_name" 2>/dev/null || true
+            else
+                ipset destroy "$team_name" 2>/dev/null || true
+            fi
+        done < "$touched_file"
+    fi
+
+    ipset restore -exist < "$snap_dir/ipset.snap" 2>/dev/null
+}
+
+_rule_can_allow_new_ssh() {
+    local rule="$1"
+
+    [[ "$rule" != *"-j ACCEPT"* ]] && return 1
+
+    if [[ "$rule" == *"-p udp"* || "$rule" == *"-p icmp"* ]]; then
+        return 1
+    fi
+
+    if [[ "$rule" == *"--ctstate "* ]]; then
+        if [[ "$rule" == *"ESTABLISHED"* || "$rule" == *"RELATED"* ]]; then
+            [[ "$rule" != *"NEW"* ]] && return 1
+        fi
+    fi
+
+    if [[ "$rule" == *"--state "* ]]; then
+        if [[ "$rule" == *"ESTABLISHED"* || "$rule" == *"RELATED"* ]]; then
+            [[ "$rule" != *"NEW"* ]] && return 1
+        fi
+    fi
+
     return 0
 }
 
@@ -221,6 +277,15 @@ persist_load() {
         esac
     done
 
+    if [[ -n "$target_chain" ]] && ! validate_chain "$target_chain"; then
+        error "잘못된 체인 값입니다: ${target_chain}"
+        if ! $quiet; then
+            info "--chain 에는 INPUT 또는 DOCKER-USER 만 사용할 수 있습니다."
+            pause
+        fi
+        return 1
+    fi
+
     local rules_file="${CONFIG_DIR}/iptables.rules"
     local snap_dir="/tmp/fw-rollback-$$"
 
@@ -305,6 +370,15 @@ persist_load() {
         return 1
     fi
 
+    if ! ipset list -n > "$snap_dir/ipset.sets" 2>/dev/null; then
+        error "ipset 셋 목록 저장 실패"
+        rm -rf "$snap_dir"
+        if ! $quiet; then pause; fi
+        return 1
+    fi
+
+    : > "$snap_dir/touched-teams"
+
     # ═════════════════════════════════════════════════
     # Step 2: [ipset restore] teams/*.conf 기반 재구성
     # ═════════════════════════════════════════════════
@@ -320,6 +394,7 @@ persist_load() {
                 for conf in ${conf_files}; do
                     local team_name
                     team_name=$(basename "$conf" .conf)
+                    _remember_touched_team "$snap_dir" "$team_name"
 
                     # ipset 생성 (이미 존재하면 무시)
                     if ! ipset create "$team_name" hash:net comment -exist 2>/dev/null; then
@@ -485,7 +560,9 @@ persist_load() {
         local ssh_rule_found=false
         local ssh_port="${SSH_CLIENT_PORT:-22}"
         while IFS= read -r rule; do
-            [[ "$rule" != *"-j ACCEPT"* ]] && continue
+            if ! _rule_can_allow_new_ssh "$rule"; then
+                continue
+            fi
 
             # 명시적 SSH 포트 허용 (TCP) — 소스 확인 필요
             if [[ "$rule" == *"-p tcp"* && "$rule" == *"--dport ${ssh_port}"* ]]; then
@@ -502,6 +579,7 @@ persist_load() {
                     fi
                     continue
                 fi
+
                 # 소스 제한 없음 = SSH-safe
                 ssh_rule_found=true; break
             fi
@@ -510,6 +588,11 @@ persist_load() {
             if [[ "$rule" != *"--dport "* ]]; then
                 # UDP/ICMP 전용이면 SSH에 무관
                 if [[ "$rule" == *"-p udp"* || "$rule" == *"-p icmp"* ]]; then
+                    continue
+                fi
+
+                # 기존 연결 유지용 규칙은 새 SSH 연결과 무관
+                if [[ "$rule" == *"ESTABLISHED"* && "$rule" == *"RELATED"* ]]; then
                     continue
                 fi
 
@@ -524,6 +607,16 @@ persist_load() {
                         # 포함되지 않으면 이 규칙은 SSH와 무관, 다음 규칙 확인
                         continue
                     fi
+                    continue
+                fi
+
+                if [[ "$rule" =~ --match-set\ ([^ ]+)\ src ]]; then
+                    if [[ -n "$SSH_CLIENT_IP" ]]; then
+                        if ipset test "${BASH_REMATCH[1]}" "$SSH_CLIENT_IP" 2>/dev/null; then
+                            ssh_rule_found=true; break
+                        fi
+                    fi
+                    continue
                 fi
 
                 # 소스 제한 없는 전체 ACCEPT = 확실히 SSH-safe

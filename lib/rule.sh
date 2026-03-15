@@ -71,6 +71,40 @@ _parse_rules() {
     done <<< "$(iptables -S "$chain" 2>/dev/null)"
 }
 
+_get_selectable_teams() {
+    local -n _teams_ref=$1
+    _teams_ref=()
+
+    local -a live_sets=()
+    local setname=""
+    while IFS= read -r line; do
+        if [[ "$line" == "Name: "* ]]; then
+            setname="${line#Name: }"
+        elif [[ "$line" == "Type: "* && -n "$setname" ]]; then
+            if [[ "${line#Type: }" == "hash:net" ]]; then
+                live_sets+=("$setname")
+            fi
+            setname=""
+        fi
+    done <<< "$(ipset list -t 2>/dev/null)"
+
+    local conf
+    for conf in "${CONFIG_DIR}/teams/"*.conf; do
+        [[ -e "$conf" ]] || continue
+
+        local team_name
+        team_name="$(basename "$conf" .conf)"
+
+        local live_name
+        for live_name in "${live_sets[@]}"; do
+            if [[ "$live_name" == "$team_name" ]]; then
+                _teams_ref+=("$team_name")
+                break
+            fi
+        done
+    done
+}
+
 # ── 규칙 목록 보기 ─────────────────────────────────
 rule_list() {
     print_header "규칙 목록 보기"
@@ -166,14 +200,13 @@ rule_add() {
             ;;
         2)
             source_type="team"
-            # ipset 목록 가져오기
+            # 저장/복원 가능한 관리 팀만 표시
             local ipsets=()
-            while IFS= read -r setname; do
-                [[ -n "$setname" ]] && ipsets+=("$setname")
-            done <<< "$(ipset list -n 2>/dev/null)"
+            _get_selectable_teams ipsets
 
             if [[ ${#ipsets[@]} -eq 0 ]]; then
-                warn "등록된 팀(ipset)이 없습니다."
+                warn "선택할 수 있는 관리 팀(ipset)이 없습니다."
+                info "팀 관리 메뉴에서 팀을 만들거나, 저장된 팀을 먼저 불러오세요."
                 info "IP 주소를 직접 입력합니다."
                 source_type="ip"
                 if ! read_valid_ip "IP 주소 (CIDR 가능, 빈 입력=취소)"; then
@@ -237,6 +270,14 @@ rule_add() {
     comment="${comment//\$/}"
     comment="${comment//\`/}"
     comment="${comment//\\/}"
+    comment="${comment//|/}"
+
+    local dup_src="$source"
+    [[ "$source_type" == "team" ]] && dup_src="team:${source}"
+    [[ "$source_type" == "all" ]] && dup_src="0.0.0.0/0"
+
+    local pre_match_count
+    pre_match_count=$(count_matching_rules "$chain" "$dup_src" "$port" "$proto" "$action" "$comment")
 
     # ── iptables 명령어 구성 (배열 기반, eval 사용하지 않음) ──
     local -a cmd_args=(iptables -A "$chain")
@@ -290,11 +331,8 @@ rule_add() {
     preview_cmd "$cmd_display"
 
     # ── 중복 규칙 검사 ───────────────────────────
-    local dup_src="$source"
-    [[ "$source_type" == "team" ]] && dup_src="team:${source}"
-    [[ "$source_type" == "all" ]] && dup_src="0.0.0.0/0"
     local dup_num
-    if dup_num=$(check_duplicate_rule "$chain" "$dup_src" "$port" "$proto" "$action"); then
+    if dup_num=$(check_duplicate_rule "$chain" "$dup_src" "$port" "$proto" "$action" "$comment"); then
         warn "동일한 규칙이 이미 존재합니다 (#${dup_num}번)"
         if ! prompt_confirm "그래도 추가하시겠습니까?"; then
             info "취소되었습니다."
@@ -353,7 +391,8 @@ rule_add() {
 
         # DROP/REJECT 규칙: 60초 안전 타이머 롤백
         if [[ "$action" == "DROP" || "$action" == "REJECT" ]]; then
-            _safety_timer_rollback "$chain" "$cmd_display"
+            local target_occurrence=$((pre_match_count + 1))
+            _safety_timer_rollback "$chain" "$dup_src" "$port" "$proto" "$action" "$comment" "$target_occurrence"
         else
             echo ""
             info "저장하려면 메인 메뉴 → '저장 / 불러오기'를 이용하세요."
@@ -369,22 +408,25 @@ rule_add() {
 # DROP/REJECT 규칙 추가 후 60초 이내에 확인하지 않으면 자동 제거
 _safety_timer_rollback() {
     local chain="$1"
-    local add_cmd="$2"
-
-    # -A 를 -D 로 바꿔서 삭제 명령어 생성
-    local del_cmd="${add_cmd/-A /-D }"
-    # "iptables " 접두어 제거 (xargs에서 iptables를 직접 호출하므로)
-    local del_args="${del_cmd#iptables }"
+    local src="$2"
+    local port="$3"
+    local proto="$4"
+    local action="$5"
+    local comment="$6"
+    local occurrence="$7"
 
     echo ""
     warn "안전 확인: 60초 이내에 Enter를 누르면 규칙이 유지됩니다."
     info "시간 내에 응답하지 않으면 자동으로 규칙이 제거됩니다..."
     echo ""
 
-    # 백그라운드 롤백 프로세스 시작 (xargs로 안전하게 실행, eval 사용 안 함)
+    # 백그라운드 롤백 프로세스 시작
     (
         sleep 60
-        echo "$del_args" | xargs iptables 2>/dev/null
+        local line_num
+        if line_num=$(find_matching_rule_line "$chain" "$src" "$port" "$proto" "$action" "$occurrence" "$comment"); then
+            iptables -D "$chain" "$line_num" 2>/dev/null
+        fi
     ) &
     local rollback_pid=$!
 

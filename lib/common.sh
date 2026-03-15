@@ -371,13 +371,19 @@ init_config_dir() {
 get_ssh_info() {
     SSH_CLIENT_IP=""
     SSH_CLIENT_PORT="${SSH_PORT:-22}"
+    local ssh_port_from_client=false
 
     if [[ -n "${SSH_CLIENT:-}" ]]; then
-        SSH_CLIENT_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
+        local _client_port _server_port
+        read -r SSH_CLIENT_IP _client_port _server_port <<< "$SSH_CLIENT"
+        if [[ -n "$_server_port" && "$_server_port" =~ ^[0-9]+$ ]]; then
+            SSH_CLIENT_PORT="$_server_port"
+            ssh_port_from_client=true
+        fi
     fi
 
     # sshd 포트 확인
-    if command -v ss &>/dev/null; then
+    if ! $ssh_port_from_client && command -v ss &>/dev/null; then
         local sshd_port
         sshd_port=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | grep -oP ':\K[0-9]+' | head -1)
         if [[ -n "$sshd_port" ]]; then

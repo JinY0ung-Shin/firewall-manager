@@ -21,6 +21,10 @@ validate_ip() {
     # 각 옥텟 범위 확인
     IFS='.' read -ra octets <<< "$ip"
     for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]+$ ]] || return 1
+        if [[ "$octet" =~ ^0[0-9]+$ ]]; then
+            return 1
+        fi
         if (( octet < 0 || octet > 255 )); then
             return 1
         fi
@@ -265,6 +269,103 @@ check_established_exists() {
     return 1
 }
 
+_rule_matches_spec() {
+    local line="$1"
+    local src="$2"
+    local port="$3"
+    local proto="$4"
+    local action="$5"
+    local comment="${6-__IGNORE_COMMENT__}"
+
+    local line_action="" line_proto="all" line_src="0.0.0.0/0" line_port="all" line_comment=""
+
+    if [[ "$line" =~ -j\ ([A-Z]+) ]]; then
+        line_action="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$line" =~ -p\ ([a-z0-9]+) ]]; then
+        line_proto="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$line" =~ -s\ ([0-9./]+) ]]; then
+        line_src="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ --match-set[[:space:]]+([^[:space:]]+)[[:space:]]+src ]]; then
+        line_src="team:${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$line" =~ --dport\ ([0-9]+) ]]; then
+        line_port="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$line" =~ --comment\ \"([^\"]+)\" ]]; then
+        line_comment="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ --comment\ ([^ ]+) ]]; then
+        line_comment="${BASH_REMATCH[1]}"
+    fi
+
+    [[ "$line_action" == "$action" ]] || return 1
+    [[ "$line_src" == "$src" ]] || return 1
+    [[ "$line_port" == "$port" ]] || return 1
+    [[ "$line_proto" == "$proto" ]] || return 1
+
+    if [[ "$comment" != "__IGNORE_COMMENT__" ]]; then
+        [[ "$line_comment" == "$comment" ]] || return 1
+    fi
+
+    return 0
+}
+
+count_matching_rules() {
+    local chain="$1"
+    local src="$2"
+    local port="$3"
+    local proto="$4"
+    local action="$5"
+    local comment="${6-__IGNORE_COMMENT__}"
+    local count=0
+    local line
+
+    while IFS= read -r line; do
+        [[ "$line" == -P* ]] && continue
+        [[ "$line" == -N* ]] && continue
+
+        if _rule_matches_spec "$line" "$src" "$port" "$proto" "$action" "$comment"; then
+            count=$((count + 1))
+        fi
+    done <<< "$(iptables -S "$chain" 2>/dev/null)"
+
+    echo "$count"
+}
+
+find_matching_rule_line() {
+    local chain="$1"
+    local src="$2"
+    local port="$3"
+    local proto="$4"
+    local action="$5"
+    local occurrence="$6"
+    local comment="${7-__IGNORE_COMMENT__}"
+    local line_num=0
+    local matched=0
+    local line
+
+    while IFS= read -r line; do
+        [[ "$line" == -P* ]] && continue
+        [[ "$line" == -N* ]] && continue
+        line_num=$((line_num + 1))
+
+        if _rule_matches_spec "$line" "$src" "$port" "$proto" "$action" "$comment"; then
+            matched=$((matched + 1))
+            if (( matched == occurrence )); then
+                echo "$line_num"
+                return 0
+            fi
+        fi
+    done <<< "$(iptables -S "$chain" 2>/dev/null)"
+
+    return 1
+}
+
 # 중복 규칙 감지
 # 반환: 0=중복 존재 (중복 규칙 번호를 stdout으로 출력), 1=중복 없음
 check_duplicate_rule() {
@@ -273,44 +374,17 @@ check_duplicate_rule() {
     local port="$3"
     local proto="$4"
     local action="$5"
+    local comment="${6-__IGNORE_COMMENT__}"
 
     local line_num=0
+    local line
     while IFS= read -r line; do
         # -P (정책) 및 -N (체인 정의) 라인 스킵
         [[ "$line" == -P* ]] && continue
         [[ "$line" == -N* ]] && continue
         line_num=$((line_num + 1))
 
-        local match=true
-
-        # 액션 매칭
-        [[ "$line" != *"-j $action"* ]] && match=false
-
-        # 소스 매칭
-        if [[ "$src" == "0.0.0.0/0" || -z "$src" ]]; then
-            # all 소스: 기존 규칙에도 -s가 없어야 매칭
-            [[ "$line" == *"-s "* ]] && match=false
-            [[ "$line" == *"--match-set "* ]] && match=false
-        elif [[ "$src" == team:* ]]; then
-            # team 소스: --match-set 매칭
-            local team="${src#team:}"
-            [[ "$line" != *"--match-set ${team} src"* ]] && match=false
-        else
-            # IP 소스: -s 매칭
-            [[ "$line" != *"-s $src"* ]] && match=false
-        fi
-
-        # 포트 매칭
-        if [[ "$port" != "all" ]]; then
-            [[ "$line" != *"--dport $port"* ]] && match=false
-        fi
-
-        # 프로토콜 매칭
-        if [[ "$proto" != "all" ]]; then
-            [[ "$line" != *"-p $proto"* ]] && match=false
-        fi
-
-        if $match; then
+        if _rule_matches_spec "$line" "$src" "$port" "$proto" "$action" "$comment"; then
             echo "$line_num"
             return 0
         fi
@@ -336,7 +410,7 @@ check_ipset_refs() {
             [[ "$line" == -P* ]] && continue
             [[ "$line" == -N* ]] && continue
             line_num=$((line_num + 1))
-            if [[ "$line" == *"--match-set ${setname}"* ]]; then
+            if [[ "$line" =~ --match-set[[:space:]]+([^[:space:]]+)[[:space:]]+src ]] && [[ "${BASH_REMATCH[1]}" == "$setname" ]]; then
                 refs+="     ${chain} #${line_num}: ${line}\n"
                 found=true
             fi

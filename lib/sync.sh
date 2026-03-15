@@ -18,6 +18,60 @@ sync_menu() {
     done
 }
 
+_team_affects_ssh() {
+    local team="$1"
+    local rule
+    local matched_team
+
+    while IFS= read -r rule; do
+        if [[ "$rule" =~ --match-set[[:space:]]+([^[:space:]]+)[[:space:]]+src ]]; then
+            matched_team="${BASH_REMATCH[1]}"
+        else
+            continue
+        fi
+        [[ "$matched_team" == "$team" ]] || continue
+        [[ "$rule" == *"-j ACCEPT"* ]] || continue
+
+        if detect_ssh_rule "$rule"; then
+            return 0
+        fi
+
+        if [[ -z "$SSH_CLIENT_IP" ]]; then
+            if [[ "$rule" == *"--dport ${SSH_CLIENT_PORT}"* ]]; then
+                return 0
+            fi
+
+            if [[ "$rule" != *"--dport "* &&
+                  "$rule" != *"-p udp"* &&
+                  "$rule" != *"-p icmp"* &&
+                  "$rule" != *"ESTABLISHED"* ]]; then
+                return 0
+            fi
+        fi
+    done <<< "$(iptables -S INPUT 2>/dev/null)"
+
+    return 1
+}
+
+_conf_team_has_ip() {
+    local conf="$1"
+    local ip="$2"
+    local line
+
+    [[ -n "$ip" ]] || return 1
+
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+
+        local entry_ip="${line%%|*}"
+        if ip_in_cidr "$ip" "$entry_ip"; then
+            return 0
+        fi
+    done < "$conf"
+
+    return 1
+}
+
 # ── 팀 동기화 ──────────────────────────────────────
 sync_teams() {
     print_header "팀 동기화 (ipset ↔ conf)"
@@ -228,6 +282,14 @@ _sync_teams_conf_to_live() {
                     continue
                 fi
 
+                if _team_affects_ssh "$team"; then
+                    warn "'${team}'은(는) 현재 SSH 허용에 사용 중일 수 있습니다."
+                    if ! prompt_confirm_critical "SSH 허용에 쓰일 수 있는 팀을 삭제하려 합니다."; then
+                        info "취소되었습니다."
+                        continue
+                    fi
+                fi
+
                 if prompt_confirm "'${team}' ipset을 삭제하시겠습니까? (conf에 없음)"; then
                     if ipset destroy "$team" 2>/dev/null; then
                         success "${team} ipset 삭제됨"
@@ -239,15 +301,31 @@ _sync_teams_conf_to_live() {
             continue
         fi
 
-        # ipset 생성 (없으면)
-        ipset create "$team" hash:net comment -exist 2>/dev/null
+        if _team_affects_ssh "$team"; then
+            if [[ -n "$SSH_CLIENT_IP" ]]; then
+                if ! _conf_team_has_ip "$conf" "$SSH_CLIENT_IP"; then
+                    warn "'${team}'은(는) 현재 SSH 허용에 사용 중인데, 새 conf에 현재 접속 IP(${SSH_CLIENT_IP})가 없습니다."
+                    if ! prompt_confirm_critical "현재 SSH 접속이 끊길 수 있는 팀 동기화입니다."; then
+                        info "취소되었습니다."
+                        continue
+                    fi
+                fi
+            else
+                warn "'${team}'은(는) SSH 허용에 사용 중일 수 있지만 현재 접속 IP를 검증할 수 없습니다."
+                if ! prompt_confirm_critical "SSH 안전성을 검증하지 못한 채 팀을 동기화하려 합니다."; then
+                    info "취소되었습니다."
+                    continue
+                fi
+            fi
+        fi
 
-        # flush 후 conf 기준으로 재구성
-        if ! ipset flush "$team" 2>/dev/null; then
-            error "${team} flush 실패"
+        local tmp_set="fw-sync-${RANDOM}-$$"
+        if ! ipset create "$tmp_set" hash:net comment 2>/dev/null; then
+            error "${team}: 임시 ipset 생성 실패"
             continue
         fi
 
+        local staged_failed=false
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             [[ "$line" == \#* ]] && continue
@@ -257,10 +335,41 @@ _sync_teams_conf_to_live() {
             comment="${line#*|}"
             comment="${comment//\\|/|}"
 
-            if ! ipset add "$team" "$ip" comment "$comment" 2>/dev/null; then
+            if ! ipset add "$tmp_set" "$ip" comment "$comment" 2>/dev/null; then
                 error "${team}: ${ip} 추가 실패"
+                staged_failed=true
+                break
             fi
         done < "$conf"
+
+        if $staged_failed; then
+            ipset destroy "$tmp_set" 2>/dev/null || true
+            continue
+        fi
+
+        local created_live=false
+        if ! ipset list "$team" &>/dev/null; then
+            created_live=true
+        fi
+
+        if ! ipset create "$team" hash:net comment -exist 2>/dev/null; then
+            error "${team}: 대상 ipset 생성 실패"
+            ipset destroy "$tmp_set" 2>/dev/null || true
+            continue
+        fi
+
+        if ! ipset swap "$team" "$tmp_set" 2>/dev/null; then
+            error "${team}: ipset 교체 실패"
+            if $created_live; then
+                ipset destroy "$team" 2>/dev/null || true
+            fi
+            ipset destroy "$tmp_set" 2>/dev/null || true
+            continue
+        fi
+
+        if ! ipset destroy "$tmp_set" 2>/dev/null; then
+            warn "${team}: 이전 ipset 정리 실패"
+        fi
 
         success "${team}: conf → live 동기화 완료"
     done
@@ -315,11 +424,10 @@ sync_rules() {
 
     # 저장 파일과 live 비교
     local saved_rules
-    saved_rules=$(grep '^-A' "$rules_file" 2>/dev/null | sort)
-    local live_sorted
-    live_sorted=$(echo "$live_all" | sort)
+    saved_rules=$(grep '^-A' "$rules_file" 2>/dev/null)
+    local live_rules="${live_all}"
 
-    if [[ "$saved_rules" == "$live_sorted" ]]; then
+    if [[ "$saved_rules" == "$live_rules" ]]; then
         success "live 규칙과 저장된 규칙이 일치합니다."
         pause
         return 0
@@ -329,9 +437,19 @@ sync_rules() {
     warn "live 규칙과 저장된 규칙이 다릅니다."
     echo ""
 
+    local saved_sorted
+    local live_sorted
+    saved_sorted=$(echo "$saved_rules" | sort)
+    live_sorted=$(echo "$live_rules" | sort)
+
+    if [[ "$saved_sorted" == "$live_sorted" ]]; then
+        warn "규칙 내용은 같지만 순서가 다릅니다. iptables는 규칙 순서에 따라 동작이 달라집니다."
+        echo ""
+    fi
+
     local only_live only_saved
-    only_live=$(comm -23 <(echo "$live_sorted") <(echo "$saved_rules") 2>/dev/null)
-    only_saved=$(comm -13 <(echo "$live_sorted") <(echo "$saved_rules") 2>/dev/null)
+    only_live=$(comm -23 <(echo "$live_sorted") <(echo "$saved_sorted") 2>/dev/null)
+    only_saved=$(comm -13 <(echo "$live_sorted") <(echo "$saved_sorted") 2>/dev/null)
 
     if [[ -n "$only_live" ]]; then
         echo -e "  ${BOLD}live에만 있는 규칙:${RESET}"
