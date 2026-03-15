@@ -4,20 +4,22 @@
 
 VERSION="1.0.0"
 
-# 스크립트 위치 감지 (설치 전: 로컬, 설치 후: /usr/local/lib/fw)
+# 스크립트 위치 감지
+# - 로컬 실행: 현재 디렉터리의 lib/, config/ 사용
+# - 설치 실행: /usr/local/lib/fw + /etc/fw 사용
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -d "${SCRIPT_DIR}/lib" ]]; then
-    LIB_DIR="${SCRIPT_DIR}/lib"
+    LIB_DIR="${FW_LIB_DIR:-${SCRIPT_DIR}/lib}"
+    CONFIG_DIR="${FW_CONFIG_DIR:-${SCRIPT_DIR}/config}"
 else
-    LIB_DIR="/usr/local/lib/fw"
+    LIB_DIR="${FW_LIB_DIR:-/usr/local/lib/fw}"
+    CONFIG_DIR="${FW_CONFIG_DIR:-/etc/fw}"
 fi
-
-CONFIG_DIR="${SCRIPT_DIR}/config"
 
 # ── 기반 모듈 로딩 ───────────────────────────────
 if [[ ! -f "${LIB_DIR}/common.sh" ]]; then
     echo "오류: ${LIB_DIR}/common.sh 를 찾을 수 없습니다." >&2
-    echo "install.sh를 먼저 실행하거나, fw 스크립트와 같은 디렉토리에 lib/ 폴더가 있는지 확인하세요." >&2
+    echo "install.sh를 먼저 실행하거나, FW_LIB_DIR를 지정하거나, fw 스크립트와 같은 디렉토리에 lib/ 폴더가 있는지 확인하세요." >&2
     exit 1
 fi
 
@@ -26,6 +28,44 @@ source "${LIB_DIR}/validators.sh"
 
 # ── 비-interactive 모드 (systemd 부팅 등) ────────
 if [[ $# -gt 0 ]]; then
+    case "$1" in
+        version|--version|-v)
+            echo "fw v${VERSION}"
+            exit 0
+            ;;
+        help|--help|-h)
+            echo ""
+            echo "  fw - Interactive Firewall Manager v${VERSION}"
+            echo ""
+            echo "  iptables/ipset을 잘 몰라도 쉽게 운영하고,"
+            echo "  현재 서버의 방화벽 설정을 다른 서버로 옮기기 쉽게 만드는 CLI 도구"
+            echo ""
+            echo "  사용법:"
+            echo "    sudo fw              대화형 모드 시작"
+            echo "    sudo fw status       현재 상태 보기"
+            echo "    sudo fw preflight    복원/이전 전 사전 점검"
+            echo "    sudo fw save         현재 규칙 저장"
+            echo "    sudo fw load         저장된 규칙 불러오기"
+            echo "    sudo fw sync         live ↔ config 동기화"
+            echo "    sudo fw export       이전용 tar.gz 번들 생성"
+            echo "    sudo fw import FILE [--apply]"
+            echo "                         이전 번들 가져오기 (옵션: 바로 적용)"
+            echo "    sudo fw load --chain INPUT --quiet"
+            echo "                         INPUT 체인만 조용히 복원 (부팅 시)"
+            echo "    fw --version         버전 표시"
+            echo "    fw --help            이 도움말"
+            echo ""
+            echo "  서버 이전 예시:"
+            echo "    1) 기존 서버에서 sudo fw save"
+            echo "    2) sudo fw export ./fw-bundle.tar.gz"
+            echo "    3) 새 서버에서 sudo fw import ./fw-bundle.tar.gz"
+            echo "    4) sudo fw preflight && sudo fw load"
+            echo "       또는 sudo fw import ./fw-bundle.tar.gz --apply"
+            echo ""
+            exit 0
+            ;;
+    esac
+
     check_root
     check_dependencies
     init_config_dir
@@ -44,35 +84,33 @@ if [[ $# -gt 0 ]]; then
             persist_save
             exit $?
             ;;
+        preflight|doctor)
+            source "${LIB_DIR}/preflight.sh"
+            preflight_report
+            exit $?
+            ;;
         sync)
             source "${LIB_DIR}/sync.sh"
             sync_menu
+            exit $?
+            ;;
+        export)
+            source "${LIB_DIR}/bundle.sh"
+            shift
+            bundle_export "$@"
+            exit $?
+            ;;
+        import)
+            source "${LIB_DIR}/persist.sh"
+            source "${LIB_DIR}/bundle.sh"
+            shift
+            bundle_import "$@"
             exit $?
             ;;
         status)
             source "${LIB_DIR}/status.sh"
             show_status
             exit $?
-            ;;
-        version|--version|-v)
-            echo "fw v${VERSION}"
-            exit 0
-            ;;
-        help|--help|-h)
-            echo ""
-            echo "  fw - Interactive Firewall Manager v${VERSION}"
-            echo ""
-            echo "  사용법:"
-            echo "    sudo fw              대화형 모드 시작"
-            echo "    sudo fw status       현재 상태 보기"
-            echo "    sudo fw save         현재 규칙 저장"
-            echo "    sudo fw load         저장된 규칙 불러오기"
-            echo "    sudo fw load --chain INPUT --quiet"
-            echo "                         INPUT 체인만 조용히 복원 (부팅 시)"
-            echo "    fw --version         버전 표시"
-            echo "    fw --help            이 도움말"
-            echo ""
-            exit 0
             ;;
         *)
             error "알 수 없는 명령: $1"
@@ -92,7 +130,9 @@ get_ssh_info
 # 모듈 로딩
 source "${LIB_DIR}/rule.sh"
 source "${LIB_DIR}/team.sh"
+source "${LIB_DIR}/bundle.sh"
 source "${LIB_DIR}/persist.sh"
+source "${LIB_DIR}/preflight.sh"
 source "${LIB_DIR}/status.sh"
 source "${LIB_DIR}/sync.sh"
 
@@ -108,6 +148,7 @@ main_menu() {
             "팀 관리 (ipset)" \
             "저장 / 불러오기" \
             "동기화 (live ↔ config)" \
+            "사전 점검 (restore 전)" \
             "현재 상태 보기"
         local choice=$?
 
@@ -117,7 +158,8 @@ main_menu() {
             2) team_menu ;;
             3) persist_menu ;;
             4) sync_menu ;;
-            5) show_status; pause ;;
+            5) preflight_report; pause ;;
+            6) show_status; pause ;;
         esac
     done
 }

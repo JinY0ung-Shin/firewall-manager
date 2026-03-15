@@ -39,7 +39,9 @@ persist_menu() {
             "현재 규칙 저장" \
             "저장된 규칙 불러오기" \
             "백업 만들기" \
-            "백업에서 복원"
+            "백업에서 복원" \
+            "이전 번들 내보내기" \
+            "이전 번들 가져오기"
         local choice=$?
 
         case $choice in
@@ -48,6 +50,8 @@ persist_menu() {
             2) persist_load ;;
             3) persist_backup ;;
             4) persist_restore ;;
+            5) bundle_export_interactive ;;
+            6) bundle_import_interactive ;;
         esac
     done
 }
