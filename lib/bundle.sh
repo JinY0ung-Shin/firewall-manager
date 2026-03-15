@@ -66,7 +66,7 @@ bundle_export() {
 
     if [[ ! -f "${rules_file}" ]]; then
         error "저장된 규칙 파일이 없습니다: ${rules_file}"
-        info "먼저 '현재 규칙 저장' 또는 'sudo fw save'를 실행하세요."
+        info "먼저 '현재 규칙 저장' 또는 'sudo ./fw save'를 실행하세요."
         return 1
     fi
 
@@ -139,11 +139,13 @@ bundle_import() {
 
     local extract_dir
     local config_snap
+    local stage_dir
     extract_dir="$(mktemp -d)"
     config_snap="$(mktemp -d)"
+    stage_dir="$(mktemp -d)"
 
     if ! tar -xzf "${archive_path}" -C "${extract_dir}"; then
-        rm -rf "${extract_dir}" "${config_snap}"
+        rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
         error "번들 압축 해제 실패"
         return 1
     fi
@@ -151,10 +153,42 @@ bundle_import() {
     local payload_dir="${extract_dir}"
     [[ -d "${extract_dir}/config" ]] && payload_dir="${extract_dir}/config"
 
-    if [[ ! -f "${payload_dir}/iptables.rules" && ! -d "${payload_dir}/teams" ]]; then
-        rm -rf "${extract_dir}" "${config_snap}"
+    # fw export로 생성된 번들은 항상 iptables.rules를 포함해야 함
+    if [[ ! -f "${payload_dir}/iptables.rules" ]]; then
+        rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
         error "올바른 fw 번들 형식이 아닙니다."
         return 1
+    fi
+
+    mkdir -p "${stage_dir}/teams"
+
+    # 먼저 staging 디렉터리로 복사하여 payload 자체가 온전한지 검증
+    if ! cp "${payload_dir}/iptables.rules" "${stage_dir}/"; then
+        rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+        error "번들에서 iptables.rules 복사 실패"
+        return 1
+    fi
+
+    if [[ -f "${payload_dir}/iptables-full.rules" ]]; then
+        if ! cp "${payload_dir}/iptables-full.rules" "${stage_dir}/"; then
+            rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+            error "번들에서 iptables-full.rules 복사 실패"
+            return 1
+        fi
+    fi
+
+    if [[ -d "${payload_dir}/teams" ]]; then
+        shopt -s nullglob
+        local team_files=("${payload_dir}/teams/"*.conf)
+        if (( ${#team_files[@]} > 0 )); then
+            if ! cp "${team_files[@]}" "${stage_dir}/teams/"; then
+                shopt -u nullglob
+                rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+                error "번들에서 팀 설정 파일 복사 실패"
+                return 1
+            fi
+        fi
+        shopt -u nullglob
     fi
 
     init_config_dir
@@ -163,14 +197,33 @@ bundle_import() {
     rm -f "${CONFIG_DIR}/iptables.rules" "${CONFIG_DIR}/iptables-full.rules"
     rm -f "${CONFIG_DIR}/teams/"*.conf 2>/dev/null || true
 
-    [[ -f "${payload_dir}/iptables.rules" ]] && cp "${payload_dir}/iptables.rules" "${CONFIG_DIR}/"
-    [[ -f "${payload_dir}/iptables-full.rules" ]] && cp "${payload_dir}/iptables-full.rules" "${CONFIG_DIR}/"
+    if ! cp "${stage_dir}/iptables.rules" "${CONFIG_DIR}/"; then
+        error "iptables.rules 적용 실패"
+        _bundle_restore_config_snapshot "${config_snap}"
+        rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+        return 1
+    fi
 
-    if [[ -d "${payload_dir}/teams" ]]; then
+    if [[ -f "${stage_dir}/iptables-full.rules" ]]; then
+        if ! cp "${stage_dir}/iptables-full.rules" "${CONFIG_DIR}/"; then
+            error "iptables-full.rules 적용 실패"
+            _bundle_restore_config_snapshot "${config_snap}"
+            rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+            return 1
+        fi
+    fi
+
+    if [[ -d "${stage_dir}/teams" ]]; then
         shopt -s nullglob
-        local team_files=("${payload_dir}/teams/"*.conf)
+        local team_files=("${stage_dir}/teams/"*.conf)
         if (( ${#team_files[@]} > 0 )); then
-            cp "${team_files[@]}" "${CONFIG_DIR}/teams/"
+            if ! cp "${team_files[@]}" "${CONFIG_DIR}/teams/"; then
+                shopt -u nullglob
+                error "팀 설정 파일 적용 실패"
+                _bundle_restore_config_snapshot "${config_snap}"
+                rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
+                return 1
+            fi
         fi
         shopt -u nullglob
     fi
@@ -185,7 +238,7 @@ bundle_import() {
         fi
 
         if persist_load --quiet; then
-            rm -rf "${extract_dir}" "${config_snap}"
+            rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
             if ! ${quiet}; then
                 success "번들 적용까지 완료되었습니다."
             fi
@@ -194,11 +247,11 @@ bundle_import() {
 
         warn "번들 적용 실패. on-disk 설정을 이전 상태로 복구합니다..."
         _bundle_restore_config_snapshot "${config_snap}"
-        rm -rf "${extract_dir}" "${config_snap}"
+        rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
         return 1
     fi
 
-    rm -rf "${extract_dir}" "${config_snap}"
+    rm -rf "${extract_dir}" "${config_snap}" "${stage_dir}"
     return 0
 }
 

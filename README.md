@@ -29,30 +29,18 @@
 sudo apt install iptables ipset
 ```
 
-## 설치
+## 사용 방식
 
-### 로컬 실행
-
-레포 그대로 실행하면 `./config/`를 사용합니다.
+이 도구는 **레포 디렉터리에서 직접 실행**하는 것을 기준으로 합니다.
+시스템 경로(`/usr/local/bin`, `/etc/fw`)에 설치하지 않고, `git pull` 후 같은 폴더에서 `./fw`를 실행하면 됩니다.
 
 ```bash
+git pull
 sudo ./fw
 ```
 
-### 시스템 전체 설치
-
-설치형으로 쓰면 실행 파일은 `/usr/local/bin/fw`, 설정은 `/etc/fw`를 기본으로 사용합니다.
-
-```bash
-sudo ./install.sh
-sudo fw --help
-```
-
-현재 레포의 저장된 설정까지 함께 옮기려면:
-
-```bash
-sudo ./install.sh --copy-config
-```
+설정 파일은 레포 안의 `./config/`를 사용합니다.
+처음 실행할 때 `config/iptables.rules` 가 없으면 현재 서버의 `INPUT` / `DOCKER-USER` 상태를 자동으로 가져옵니다.
 
 ## 사용법
 
@@ -88,6 +76,14 @@ sudo ./fw import FILE  # 이전 번들 가져오기
 sudo ./fw --help       # 도움말
 ```
 
+## 업데이트
+
+```bash
+git pull
+```
+
+업데이트 후에도 같은 디렉터리에서 `sudo ./fw ...`로 실행하면 됩니다.
+
 ## 서버 이전 흐름
 
 다른 서버로 방화벽 설정을 옮길 때는 보통 아래 흐름으로 사용합니다.
@@ -105,18 +101,19 @@ sudo ./fw export ./fw-bundle.tar.gz
 scp -r ./config user@new-server:/path/to/firewall-manager/
 ```
 
-3. 새 서버에서 저장된 설정을 적용합니다.
+3. 새 서버에서 레포를 준비한 뒤 저장된 설정을 적용합니다.
 
 ```bash
-sudo fw import ./fw-bundle.tar.gz
-sudo fw preflight
-sudo fw load
+git pull
+sudo ./fw import ./fw-bundle.tar.gz
+sudo ./fw preflight
+sudo ./fw load
 ```
 
 이미 점검을 마쳤다면 한 번에 적용할 수도 있습니다.
 
 ```bash
-sudo fw import ./fw-bundle.tar.gz --apply
+sudo ./fw import ./fw-bundle.tar.gz --apply
 ```
 
 직접 `iptables`나 `ipset`을 수정한 뒤 파일 상태와 비교해서 맞추고 싶다면
@@ -144,6 +141,7 @@ sudo fw import ./fw-bundle.tar.gz --apply
 
 ### 서버 이전을 위한 저장 / 복원
 - 현재 iptables / ipset 상태를 `./config/` 기준으로 정리해 저장
+- 첫 실행 시 기존 live iptables 상태를 자동 bootstrap
 - 백업 생성·복원 (최근 10개 자동 유지)
 - tar.gz 기반 이전 번들 export/import 지원
 - 트랜잭셔널 로드: 실패 시 자동 롤백
@@ -178,7 +176,6 @@ sudo fw import ./fw-bundle.tar.gz --apply
 ```
 firewall-manager/
 ├── fw                  # 메인 스크립트 (엔트리포인트)
-├── install.sh          # 시스템 전체 설치 스크립트
 ├── examples/
 │   ├── SCENARIOS.md    # 실사용 시나리오 예시
 │   └── fw-restore.service

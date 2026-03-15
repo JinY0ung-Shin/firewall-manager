@@ -56,6 +56,72 @@ persist_menu() {
     done
 }
 
+# ── 첫 실행 bootstrap ───────────────────────────────
+# config/에 저장된 rules 파일이 아직 없으면 현재 live 상태를 초기값으로 저장
+maybe_bootstrap_live_rules() {
+    local marker="${CONFIG_DIR}/.bootstrap-complete"
+    local rules_file="${CONFIG_DIR}/iptables.rules"
+    local full_rules_file="${CONFIG_DIR}/iptables-full.rules"
+
+    if [[ -f "${marker}" ]]; then
+        return 1
+    fi
+
+    # 이미 저장된 rules 파일이 있으면 기존 config를 존중하고 bootstrap만 완료 처리
+    if [[ -f "${rules_file}" || -f "${full_rules_file}" ]]; then
+        : > "${marker}"
+        return 1
+    fi
+
+    local rules_tmp
+    local full_tmp
+    rules_tmp="$(mktemp)"
+    full_tmp="$(mktemp)"
+
+    if ! iptables -S INPUT > "${rules_tmp}" 2>/dev/null; then
+        rm -f "${rules_tmp}" "${full_tmp}"
+        warn "처음 실행 자동 가져오기: INPUT 상태를 읽지 못했습니다."
+        return 1
+    fi
+
+    if iptables -L DOCKER-USER -n &>/dev/null; then
+        if ! iptables -S DOCKER-USER >> "${rules_tmp}" 2>/dev/null; then
+            rm -f "${rules_tmp}" "${full_tmp}"
+            warn "처음 실행 자동 가져오기: DOCKER-USER 상태를 읽지 못했습니다."
+            return 1
+        fi
+    fi
+
+    if ! iptables-save > "${full_tmp}" 2>/dev/null; then
+        rm -f "${rules_tmp}" "${full_tmp}"
+        warn "처음 실행 자동 가져오기: 전체 iptables 스냅샷 저장에 실패했습니다."
+        return 1
+    fi
+
+    if ! mv "${rules_tmp}" "${rules_file}"; then
+        rm -f "${rules_tmp}" "${full_tmp}"
+        warn "처음 실행 자동 가져오기: iptables.rules 저장에 실패했습니다."
+        return 1
+    fi
+
+    if ! mv "${full_tmp}" "${full_rules_file}"; then
+        rm -f "${full_tmp}"
+        warn "처음 실행 자동 가져오기: iptables-full.rules 저장에 실패했습니다."
+        return 1
+    fi
+
+    : > "${marker}"
+
+    local input_count
+    local docker_count
+    input_count=$(grep -c '^-A INPUT' "${rules_file}" 2>/dev/null || echo "0")
+    docker_count=$(grep -c '^-A DOCKER-USER' "${rules_file}" 2>/dev/null || echo "0")
+
+    info "처음 실행이라 현재 iptables 상태를 config에 자동 가져왔습니다."
+    info "INPUT ${input_count}개, DOCKER-USER ${docker_count}개 규칙이 저장되었습니다."
+    return 0
+}
+
 # ── 현재 규칙 저장 ──────────────────────────────────
 persist_save() {
     print_header "현재 규칙 저장"

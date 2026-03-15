@@ -326,7 +326,7 @@ print_table() {
 # ── 전제조건 확인 ────────────────────────────────
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        fatal "root 권한이 필요합니다. 'sudo fw' 로 실행하세요."
+        fatal "root 권한이 필요합니다. 레포 디렉터리에서 'sudo ./fw' 로 실행하세요."
     fi
 }
 

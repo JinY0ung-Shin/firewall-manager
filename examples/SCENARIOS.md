@@ -24,10 +24,10 @@ sudo ./fw export ./fw-bundle.tar.gz
 On the target server:
 
 ```bash
-sudo ./install.sh
-sudo fw import ./fw-bundle.tar.gz
-sudo fw preflight
-sudo fw load
+git pull
+sudo ./fw import ./fw-bundle.tar.gz
+sudo ./fw preflight
+sudo ./fw load
 ```
 
 If the target server uses Docker, make sure the `DOCKER-USER` chain exists before restore.

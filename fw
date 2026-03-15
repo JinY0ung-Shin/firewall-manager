@@ -4,22 +4,15 @@
 
 VERSION="1.0.0"
 
-# 스크립트 위치 감지
-# - 로컬 실행: 현재 디렉터리의 lib/, config/ 사용
-# - 설치 실행: /usr/local/lib/fw + /etc/fw 사용
+# 레포 디렉터리 기준 경로
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -d "${SCRIPT_DIR}/lib" ]]; then
-    LIB_DIR="${FW_LIB_DIR:-${SCRIPT_DIR}/lib}"
-    CONFIG_DIR="${FW_CONFIG_DIR:-${SCRIPT_DIR}/config}"
-else
-    LIB_DIR="${FW_LIB_DIR:-/usr/local/lib/fw}"
-    CONFIG_DIR="${FW_CONFIG_DIR:-/etc/fw}"
-fi
+LIB_DIR="${SCRIPT_DIR}/lib"
+CONFIG_DIR="${SCRIPT_DIR}/config"
 
 # ── 기반 모듈 로딩 ───────────────────────────────
 if [[ ! -f "${LIB_DIR}/common.sh" ]]; then
     echo "오류: ${LIB_DIR}/common.sh 를 찾을 수 없습니다." >&2
-    echo "install.sh를 먼저 실행하거나, FW_LIB_DIR를 지정하거나, fw 스크립트와 같은 디렉토리에 lib/ 폴더가 있는지 확인하세요." >&2
+    echo "fw 스크립트와 같은 디렉토리에 lib/ 폴더가 있는지 확인하세요." >&2
     exit 1
 fi
 
@@ -41,28 +34,38 @@ if [[ $# -gt 0 ]]; then
             echo "  현재 서버의 방화벽 설정을 다른 서버로 옮기기 쉽게 만드는 CLI 도구"
             echo ""
             echo "  사용법:"
-            echo "    sudo fw              대화형 모드 시작"
-            echo "    sudo fw status       현재 상태 보기"
-            echo "    sudo fw preflight    복원/이전 전 사전 점검"
-            echo "    sudo fw save         현재 규칙 저장"
-            echo "    sudo fw load         저장된 규칙 불러오기"
-            echo "    sudo fw sync         live ↔ config 동기화"
-            echo "    sudo fw export       이전용 tar.gz 번들 생성"
-            echo "    sudo fw import FILE [--apply]"
+            echo "    sudo ./fw              대화형 모드 시작"
+            echo "    sudo ./fw status       현재 상태 보기"
+            echo "    sudo ./fw preflight    복원/이전 전 사전 점검"
+            echo "    sudo ./fw save         현재 규칙 저장"
+            echo "    sudo ./fw load         저장된 규칙 불러오기"
+            echo "    sudo ./fw sync         live ↔ config 동기화"
+            echo "    sudo ./fw export       이전용 tar.gz 번들 생성"
+            echo "    sudo ./fw import FILE [--apply]"
             echo "                         이전 번들 가져오기 (옵션: 바로 적용)"
-            echo "    sudo fw load --chain INPUT --quiet"
+            echo "    sudo ./fw load --chain INPUT --quiet"
             echo "                         INPUT 체인만 조용히 복원 (부팅 시)"
-            echo "    fw --version         버전 표시"
-            echo "    fw --help            이 도움말"
+            echo "    ./fw --version         버전 표시"
+            echo "    ./fw --help            이 도움말"
             echo ""
-            echo "  서버 이전 예시:"
-            echo "    1) 기존 서버에서 sudo fw save"
-            echo "    2) sudo fw export ./fw-bundle.tar.gz"
-            echo "    3) 새 서버에서 sudo fw import ./fw-bundle.tar.gz"
-            echo "    4) sudo fw preflight && sudo fw load"
-            echo "       또는 sudo fw import ./fw-bundle.tar.gz --apply"
+            echo "  권장 흐름:"
+            echo "    1) 레포 디렉터리에서 git pull"
+            echo "    2) 같은 디렉터리에서 sudo ./fw ..."
             echo ""
             exit 0
+            ;;
+        preflight|doctor)
+            check_root
+            init_config_dir
+            if command -v iptables >/dev/null 2>&1; then
+                detect_iptables_backend
+            else
+                IPTABLES_BACKEND="unknown"
+            fi
+            get_ssh_info
+            source "${LIB_DIR}/preflight.sh"
+            preflight_report
+            exit $?
             ;;
     esac
 
@@ -82,11 +85,6 @@ if [[ $# -gt 0 ]]; then
         save)
             source "${LIB_DIR}/persist.sh"
             persist_save
-            exit $?
-            ;;
-        preflight|doctor)
-            source "${LIB_DIR}/preflight.sh"
-            preflight_report
             exit $?
             ;;
         sync)
@@ -136,7 +134,8 @@ source "${LIB_DIR}/preflight.sh"
 source "${LIB_DIR}/status.sh"
 source "${LIB_DIR}/sync.sh"
 
-# ── 기존 ipset 자동 가져오기 ────────────────────
+# ── 첫 실행 bootstrap + 기존 ipset 자동 가져오기 ───
+maybe_bootstrap_live_rules
 auto_import_teams
 
 # ── 메인 메뉴 루프 ──────────────────────────────

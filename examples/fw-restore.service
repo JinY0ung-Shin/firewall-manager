@@ -2,11 +2,12 @@
 Description=Restore fw firewall rules at boot
 Wants=network-online.target
 After=network-online.target docker.service
-ConditionPathExists=/etc/fw/iptables.rules
+ConditionPathExists=/path/to/firewall-manager/config/iptables.rules
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/fw load --quiet
+WorkingDirectory=/path/to/firewall-manager
+ExecStart=/path/to/firewall-manager/fw load --quiet
 RemainAfterExit=yes
 
 [Install]
