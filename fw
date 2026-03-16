@@ -77,7 +77,9 @@ if [[ $# -gt 0 ]]; then
 
     case "$1" in
         load)
+            source "${LIB_DIR}/team.sh"
             source "${LIB_DIR}/persist.sh"
+            auto_import_teams
             shift
             persist_load "$@"
             exit $?
@@ -88,7 +90,9 @@ if [[ $# -gt 0 ]]; then
             exit $?
             ;;
         sync)
+            source "${LIB_DIR}/team.sh"
             source "${LIB_DIR}/sync.sh"
+            auto_import_teams
             sync_menu
             exit $?
             ;;

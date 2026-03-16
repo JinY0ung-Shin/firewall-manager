@@ -356,22 +356,29 @@ persist_load() {
 
     mkdir -p "$snap_dir"
 
-    if ! iptables-save > "$snap_dir/iptables.snap" 2>/dev/null; then
+    local snap_err
+    if ! iptables-save > "$snap_dir/iptables.snap" 2>"$snap_dir/.stderr"; then
+        snap_err=$(cat "$snap_dir/.stderr")
         error "iptables 스냅샷 저장 실패"
+        [[ -n "$snap_err" ]] && error "  원인: $snap_err"
         rm -rf "$snap_dir"
         if ! $quiet; then pause; fi
         return 1
     fi
 
-    if ! ipset save > "$snap_dir/ipset.snap" 2>/dev/null; then
+    if ! ipset save > "$snap_dir/ipset.snap" 2>"$snap_dir/.stderr"; then
+        snap_err=$(cat "$snap_dir/.stderr")
         error "ipset 스냅샷 저장 실패"
+        [[ -n "$snap_err" ]] && error "  원인: $snap_err"
         rm -rf "$snap_dir"
         if ! $quiet; then pause; fi
         return 1
     fi
 
-    if ! ipset list -n > "$snap_dir/ipset.sets" 2>/dev/null; then
+    if ! ipset list -n > "$snap_dir/ipset.sets" 2>"$snap_dir/.stderr"; then
+        snap_err=$(cat "$snap_dir/.stderr")
         error "ipset 셋 목록 저장 실패"
+        [[ -n "$snap_err" ]] && error "  원인: $snap_err"
         rm -rf "$snap_dir"
         if ! $quiet; then pause; fi
         return 1
@@ -401,8 +408,10 @@ persist_load() {
                     team_type="$(get_team_type "$team_name")"
 
                     # ipset 생성 (이미 존재하면 무시)
-                    if ! ipset create "$team_name" "$team_type" comment -exist 2>/dev/null; then
-                        error "ipset create 실패: $team_name"
+                    local err
+                    if ! err=$(ipset create "$team_name" "$team_type" comment -exist 2>&1); then
+                        error "ipset create 실패: $team_name (타입: $team_type)"
+                        [[ -n "$err" ]] && error "  원인: $err"
                         _rollback
                         rm -rf "$snap_dir"
                         if ! $quiet; then pause; fi
@@ -410,8 +419,9 @@ persist_load() {
                     fi
 
                     # 기존 엔트리 제거
-                    if ! ipset flush "$team_name" 2>/dev/null; then
+                    if ! err=$(ipset flush "$team_name" 2>&1); then
                         error "ipset flush 실패: $team_name"
+                        [[ -n "$err" ]] && error "  원인: $err"
                         _rollback
                         rm -rf "$snap_dir"
                         if ! $quiet; then pause; fi
@@ -431,8 +441,9 @@ persist_load() {
                         # 파이프 이스케이프 복원
                         comment="${comment//\\|/|}"
 
-                        if ! ipset add "$team_name" "$ip" comment "$comment" 2>/dev/null; then
+                        if ! err=$(ipset add "$team_name" "$ip" comment "$comment" 2>&1); then
                             error "ipset add 실패: $team_name <- $ip"
+                            [[ -n "$err" ]] && error "  원인: $err"
                             _rollback
                             rm -rf "$snap_dir"
                             if ! $quiet; then pause; fi
@@ -459,8 +470,10 @@ persist_load() {
         fi
 
         # INPUT flush
-        if ! iptables -F INPUT 2>/dev/null; then
+        local err
+        if ! err=$(iptables -F INPUT 2>&1); then
             error "INPUT 체인 flush 실패"
+            [[ -n "$err" ]] && error "  원인: $err"
             _rollback
             rm -rf "$snap_dir"
             if ! $quiet; then pause; fi
@@ -475,8 +488,9 @@ persist_load() {
 
             # -A INPUT 부분을 iptables -A INPUT 으로 변환하여 실행
             # xargs 사용: 따옴표(comment 등)를 올바르게 처리하면서 셸 인젝션 방지
-            if ! echo "$line" | xargs iptables 2>/dev/null; then
+            if ! err=$(echo "$line" | xargs iptables 2>&1); then
                 error "INPUT 규칙 적용 실패: $line"
+                [[ -n "$err" ]] && error "  원인: $err"
                 input_failed=true
                 break
             fi
@@ -495,8 +509,9 @@ persist_load() {
             if ! $quiet; then
                 warn "ESTABLISHED,RELATED 규칙이 없어 자동으로 추가합니다."
             fi
-            if ! iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; then
+            if ! err=$(iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>&1); then
                 error "ESTABLISHED,RELATED 규칙 자동 추가 실패"
+                [[ -n "$err" ]] && error "  원인: $err"
                 _rollback
                 rm -rf "$snap_dir"
                 if ! $quiet; then pause; fi
@@ -517,8 +532,10 @@ persist_load() {
             fi
 
             # DOCKER-USER flush
-            if ! iptables -F DOCKER-USER 2>/dev/null; then
+            local err
+            if ! err=$(iptables -F DOCKER-USER 2>&1); then
                 error "DOCKER-USER 체인 flush 실패"
+                [[ -n "$err" ]] && error "  원인: $err"
                 _rollback
                 rm -rf "$snap_dir"
                 if ! $quiet; then pause; fi
@@ -530,8 +547,9 @@ persist_load() {
             while IFS= read -r line; do
                 [[ "$line" != -A\ DOCKER-USER* ]] && continue
 
-                if ! echo "$line" | xargs iptables 2>/dev/null; then
+                if ! err=$(echo "$line" | xargs iptables 2>&1); then
                     error "DOCKER-USER 규칙 적용 실패: $line"
+                    [[ -n "$err" ]] && error "  원인: $err"
                     docker_failed=true
                     break
                 fi
