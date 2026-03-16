@@ -485,6 +485,21 @@ persist_load() {
             return 1
         fi
 
+        # ESTABLISHED,RELATED 규칙이 파일에 없으면 자동으로 INPUT 체인 맨 앞에 삽입
+        # (다른 서버에서 가져온 규칙 등에 누락되어 있을 수 있음)
+        if ! check_established_exists; then
+            if ! $quiet; then
+                warn "ESTABLISHED,RELATED 규칙이 없어 자동으로 추가합니다."
+            fi
+            if ! iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; then
+                error "ESTABLISHED,RELATED 규칙 자동 추가 실패"
+                _rollback
+                rm -rf "$snap_dir"
+                if ! $quiet; then pause; fi
+                return 1
+            fi
+        fi
+
         if ! $quiet; then
             success "INPUT 규칙 복원 완료"
         fi
