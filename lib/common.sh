@@ -360,6 +360,29 @@ detect_iptables_backend() {
     fi
 }
 
+# ── ipset 타입 ───────────────────────────────────
+# 지원하는 ipset 타입
+SUPPORTED_IPSET_TYPES="hash:net|hash:ip"
+
+# conf 파일에서 ipset 타입 읽기 (기본값: hash:net, 하위 호환)
+get_team_type() {
+    local team="$1"
+    local conf="${CONFIG_DIR}/teams/${team}.conf"
+    local type_line
+    type_line=$(grep '^# Type: ' "$conf" 2>/dev/null | head -1)
+    if [[ -n "$type_line" ]]; then
+        echo "${type_line#\# Type: }"
+    else
+        echo "hash:net"
+    fi
+}
+
+# ipset 타입이 지원되는지 확인
+is_supported_ipset_type() {
+    local t="$1"
+    [[ "$t" == "hash:net" || "$t" == "hash:ip" ]]
+}
+
 # ── 설정 디렉토리 초기화 ─────────────────────────
 init_config_dir() {
     mkdir -p "${CONFIG_DIR}"

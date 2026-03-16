@@ -4,7 +4,7 @@
 
 # ── 자동 가져오기 ────────────────────────────────
 
-# 시작 시 기존 ipset 셋(hash:net)을 conf 파일로 자동 가져오기
+# 시작 시 기존 ipset 셋(hash:net/hash:ip)을 conf 파일로 자동 가져오기
 auto_import_teams() {
     local teams_dir="${CONFIG_DIR}/teams"
     local imported=0
@@ -15,11 +15,12 @@ auto_import_teams() {
             setname="${line#Name: }"
         elif [[ "$line" == "Type: "* && -n "$setname" ]]; then
             local settype="${line#Type: }"
-            if [[ "$settype" == "hash:net" && ! -f "${teams_dir}/${setname}.conf" ]]; then
+            if is_supported_ipset_type "$settype" && [[ ! -f "${teams_dir}/${setname}.conf" ]]; then
                 # conf 파일 생성
                 local tmpfile
                 tmpfile="$(mktemp)"
                 echo "# Team: ${setname}" > "$tmpfile"
+                echo "# Type: ${settype}" >> "$tmpfile"
                 echo "# Imported: $(date '+%Y-%m-%d %H:%M:%S')" >> "$tmpfile"
 
                 # live ipset에서 멤버 가져오기
@@ -244,7 +245,18 @@ team_create() {
         return 1
     fi
 
-    local cmd="ipset create ${name} hash:net comment"
+    # ipset 타입 선택
+    echo ""
+    prompt_choice "ipset 타입" "hash:net (IP/CIDR 대역)" "hash:ip (개별 IP)"
+    local type_choice=$?
+    if [[ $type_choice -eq 0 ]]; then return 0; fi
+    local ipset_type
+    case $type_choice in
+        1) ipset_type="hash:net" ;;
+        2) ipset_type="hash:ip" ;;
+    esac
+
+    local cmd="ipset create ${name} ${ipset_type} comment"
     preview_cmd "$cmd"
 
     if ! prompt_confirm "생성하시겠습니까?"; then
@@ -255,12 +267,13 @@ team_create() {
 
     # ipset 생성 먼저
     local err
-    if err=$(ipset create "$name" hash:net comment 2>&1); then
+    if err=$(ipset create "$name" "$ipset_type" comment 2>&1); then
         # 성공 시 conf 파일 생성
         local created
         created="$(date '+%Y-%m-%d %H:%M:%S')"
         cat > "${CONFIG_DIR}/teams/${name}.conf" <<EOF
 # Team: ${name}
+# Type: ${ipset_type}
 # Created: ${created}
 EOF
         success "팀 '${name}'이(가) 생성되었습니다."

@@ -81,7 +81,7 @@ _get_selectable_teams() {
         if [[ "$line" == "Name: "* ]]; then
             setname="${line#Name: }"
         elif [[ "$line" == "Type: "* && -n "$setname" ]]; then
-            if [[ "${line#Type: }" == "hash:net" ]]; then
+            if is_supported_ipset_type "${line#Type: }"; then
                 live_sets+=("$setname")
             fi
             setname=""

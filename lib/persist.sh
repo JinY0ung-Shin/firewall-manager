@@ -396,8 +396,12 @@ persist_load() {
                     team_name=$(basename "$conf" .conf)
                     _remember_touched_team "$snap_dir" "$team_name"
 
+                    # conf 파일에서 ipset 타입 읽기
+                    local team_type
+                    team_type="$(get_team_type "$team_name")"
+
                     # ipset 생성 (이미 존재하면 무시)
-                    if ! ipset create "$team_name" hash:net comment -exist 2>/dev/null; then
+                    if ! ipset create "$team_name" "$team_type" comment -exist 2>/dev/null; then
                         error "ipset create 실패: $team_name"
                         _rollback
                         rm -rf "$snap_dir"

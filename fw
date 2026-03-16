@@ -106,7 +106,9 @@ if [[ $# -gt 0 ]]; then
             exit $?
             ;;
         status)
+            source "${LIB_DIR}/team.sh"
             source "${LIB_DIR}/status.sh"
+            auto_import_teams
             show_status
             exit $?
             ;;

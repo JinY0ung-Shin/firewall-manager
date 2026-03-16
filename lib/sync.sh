@@ -86,14 +86,14 @@ sync_teams() {
         done
     fi
 
-    # live ipset 기반 팀 목록 (hash:net 타입만)
+    # live ipset 기반 팀 목록 (hash:net/hash:ip 타입)
     local -a live_teams=()
     local _setname=""
     while IFS= read -r _line; do
         if [[ "$_line" == "Name: "* ]]; then
             _setname="${_line#Name: }"
         elif [[ "$_line" == "Type: "* && -n "$_setname" ]]; then
-            if [[ "${_line#Type: }" == "hash:net" ]]; then
+            if is_supported_ipset_type "${_line#Type: }"; then
                 live_teams+=("$_setname")
             fi
             _setname=""
@@ -234,7 +234,15 @@ _sync_teams_live_to_conf() {
         if [[ -f "$conf" ]]; then
             grep '^#' "$conf" > "$tmpfile" 2>/dev/null || true
         else
+            # live ipset에서 타입 감지
+            local live_type="hash:net"
+            local _lt
+            _lt=$(ipset list -t "$team" 2>/dev/null | grep '^Type: ' | head -1)
+            if [[ -n "$_lt" ]]; then
+                live_type="${_lt#Type: }"
+            fi
             echo "# Team: ${team}" > "$tmpfile"
+            echo "# Type: ${live_type}" >> "$tmpfile"
             echo "# Synced: $(date '+%Y-%m-%d %H:%M:%S')" >> "$tmpfile"
         fi
 
@@ -319,8 +327,11 @@ _sync_teams_conf_to_live() {
             fi
         fi
 
+        local team_type
+        team_type="$(get_team_type "$team")"
+
         local tmp_set="fw-sync-${RANDOM}-$$"
-        if ! ipset create "$tmp_set" hash:net comment 2>/dev/null; then
+        if ! ipset create "$tmp_set" "$team_type" comment 2>/dev/null; then
             error "${team}: 임시 ipset 생성 실패"
             continue
         fi
@@ -352,7 +363,7 @@ _sync_teams_conf_to_live() {
             created_live=true
         fi
 
-        if ! ipset create "$team" hash:net comment -exist 2>/dev/null; then
+        if ! ipset create "$team" "$team_type" comment -exist 2>/dev/null; then
             error "${team}: 대상 ipset 생성 실패"
             ipset destroy "$tmp_set" 2>/dev/null || true
             continue
