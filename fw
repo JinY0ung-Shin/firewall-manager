@@ -1,172 +1,117 @@
 #!/usr/bin/env bash
-# fw - Interactive Firewall Manager
-# INPUT/DOCKER-USER 체인과 ipset 팀을 대화형으로 관리합니다.
+# fw — Firewall Manager entrypoint
 
-VERSION="1.0.0"
+set -u
 
-# 레포 디렉터리 기준 경로
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="${SCRIPT_DIR}/lib"
-CONFIG_DIR="${SCRIPT_DIR}/config"
+FW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FW_CONFIG_DIR="${FW_CONFIG_DIR:-$FW_ROOT/config}"
 
-# ── 기반 모듈 로딩 ───────────────────────────────
-if [[ ! -f "${LIB_DIR}/common.sh" ]]; then
-    echo "오류: ${LIB_DIR}/common.sh 를 찾을 수 없습니다." >&2
-    echo "fw 스크립트와 같은 디렉토리에 lib/ 폴더가 있는지 확인하세요." >&2
-    exit 1
-fi
+# lib 로드 (순서 중요: common → scope → persist → safety → bootstrap → team → rule → rollback → status)
+# shellcheck source=lib/common.sh
+source "$FW_ROOT/lib/common.sh"
+# shellcheck source=lib/scope.sh
+source "$FW_ROOT/lib/scope.sh"
+# shellcheck source=lib/persist.sh
+source "$FW_ROOT/lib/persist.sh"
+# shellcheck source=lib/safety.sh
+source "$FW_ROOT/lib/safety.sh"
+# shellcheck source=lib/bootstrap.sh
+source "$FW_ROOT/lib/bootstrap.sh"
+# shellcheck source=lib/team.sh
+source "$FW_ROOT/lib/team.sh"
+# shellcheck source=lib/rule.sh
+source "$FW_ROOT/lib/rule.sh"
+# shellcheck source=lib/rollback.sh
+source "$FW_ROOT/lib/rollback.sh"
+# shellcheck source=lib/status.sh
+source "$FW_ROOT/lib/status.sh"
 
-source "${LIB_DIR}/common.sh"
-source "${LIB_DIR}/validators.sh"
+# ── CLI ───────────────────────────────────────────────────
+print_help() {
+  cat <<'EOF' >&2
+fw — Interactive Firewall Manager
 
-# ── 비-interactive 모드 (systemd 부팅 등) ────────
-if [[ $# -gt 0 ]]; then
-    case "$1" in
-        version|--version|-v)
-            echo "fw v${VERSION}"
-            exit 0
-            ;;
-        help|--help|-h)
-            echo ""
-            echo "  fw - Interactive Firewall Manager v${VERSION}"
-            echo ""
-            echo "  iptables/ipset을 잘 몰라도 쉽게 운영하고,"
-            echo "  현재 서버의 방화벽 설정을 다른 서버로 옮기기 쉽게 만드는 CLI 도구"
-            echo ""
-            echo "  사용법:"
-            echo "    sudo ./fw              대화형 모드 시작"
-            echo "    sudo ./fw status       현재 상태 보기"
-            echo "    sudo ./fw preflight    복원/이전 전 사전 점검"
-            echo "    sudo ./fw save         현재 규칙 저장"
-            echo "    sudo ./fw load         저장된 규칙 불러오기"
-            echo "    sudo ./fw sync         live ↔ config 동기화"
-            echo "    sudo ./fw export       이전용 tar.gz 번들 생성"
-            echo "    sudo ./fw import FILE [--apply]"
-            echo "                         이전 번들 가져오기 (옵션: 바로 적용)"
-            echo "    sudo ./fw load --chain INPUT --quiet"
-            echo "                         INPUT 체인만 조용히 복원 (부팅 시)"
-            echo "    ./fw --version         버전 표시"
-            echo "    ./fw --help            이 도움말"
-            echo ""
-            echo "  권장 흐름:"
-            echo "    1) 레포 디렉터리에서 git pull"
-            echo "    2) 같은 디렉터리에서 sudo ./fw ..."
-            echo ""
-            exit 0
-            ;;
-        preflight|doctor)
-            check_root
-            init_config_dir
-            if command -v iptables >/dev/null 2>&1; then
-                detect_iptables_backend
-            else
-                IPTABLES_BACKEND="unknown"
-            fi
-            get_ssh_info
-            source "${LIB_DIR}/preflight.sh"
-            preflight_report
-            exit $?
-            ;;
-    esac
+사용법:
+  sudo ./fw                 대화형 메뉴
+  sudo ./fw status          현재 상태 표시
+  sudo ./fw rollback [N]    백업 목록 or 인덱스 복원
+  sudo ./fw --help          이 도움말
 
-    check_root
-    check_dependencies
-    init_config_dir
-    detect_iptables_backend
-    get_ssh_info
-
-    case "$1" in
-        load)
-            source "${LIB_DIR}/team.sh"
-            source "${LIB_DIR}/persist.sh"
-            auto_import_teams
-            shift
-            persist_load "$@"
-            exit $?
-            ;;
-        save)
-            source "${LIB_DIR}/persist.sh"
-            persist_save
-            exit $?
-            ;;
-        sync)
-            source "${LIB_DIR}/team.sh"
-            source "${LIB_DIR}/sync.sh"
-            auto_import_teams
-            sync_menu
-            exit $?
-            ;;
-        export)
-            source "${LIB_DIR}/bundle.sh"
-            shift
-            bundle_export "$@"
-            exit $?
-            ;;
-        import)
-            source "${LIB_DIR}/persist.sh"
-            source "${LIB_DIR}/bundle.sh"
-            shift
-            bundle_import "$@"
-            exit $?
-            ;;
-        status)
-            source "${LIB_DIR}/team.sh"
-            source "${LIB_DIR}/status.sh"
-            auto_import_teams
-            show_status
-            exit $?
-            ;;
-        *)
-            error "알 수 없는 명령: $1"
-            echo "  'fw --help'를 참조하세요."
-            exit 1
-            ;;
-    esac
-fi
-
-# ── Interactive 모드 ─────────────────────────────
-check_root
-check_dependencies
-init_config_dir
-detect_iptables_backend
-get_ssh_info
-
-# 모듈 로딩
-source "${LIB_DIR}/rule.sh"
-source "${LIB_DIR}/team.sh"
-source "${LIB_DIR}/bundle.sh"
-source "${LIB_DIR}/persist.sh"
-source "${LIB_DIR}/preflight.sh"
-source "${LIB_DIR}/status.sh"
-source "${LIB_DIR}/sync.sh"
-
-# ── 첫 실행 bootstrap + 기존 ipset 자동 가져오기 ───
-maybe_bootstrap_live_rules
-auto_import_teams
-
-# ── 메인 메뉴 루프 ──────────────────────────────
-main_menu() {
-    while true; do
-        print_banner
-        menu_select_main \
-            "규칙 관리 (iptables)" \
-            "팀 관리 (ipset)" \
-            "저장 / 불러오기" \
-            "동기화 (live ↔ config)" \
-            "사전 점검 (restore 전)" \
-            "현재 상태 보기"
-        local choice=$?
-
-        case $choice in
-            0) echo ""; info "종료합니다."; echo ""; exit 0 ;;
-            1) rule_menu ;;
-            2) team_menu ;;
-            3) persist_menu ;;
-            4) sync_menu ;;
-            5) preflight_report; pause ;;
-            6) show_status; pause ;;
-        esac
-    done
+관리 범위: INPUT, DOCKER-USER, OUTPUT(차단만), ipset(hash:net).
+FORWARD/nat/mangle/다른 ipset 타입은 건드리지 않음.
+EOF
 }
 
-main_menu
+main_menu() {
+  while true; do
+    clear
+    info "  ${C_BLD}+======================================+${C_RST}"
+    info "  ${C_BLD}|       Firewall Manager v2.0.0        |${C_RST}"
+    info "  ${C_BLD}+======================================+${C_RST}"
+    info ""
+    local idx
+    idx=$(arrow_menu "메뉴 (q=종료):" \
+      "규칙 관리" \
+      "팀 관리 (ipset)" \
+      "롤백 (백업에서 복원)" \
+      "현재 상태 보기" \
+      "종료") || return 0
+    (( idx < 0 )) && return 0
+    case "$idx" in
+      0) rule_menu ;;
+      1) team_menu ;;
+      2) rollback_menu; pause ;;
+      3) status_show; pause ;;
+      4) return 0 ;;
+    esac
+  done
+}
+
+# ── lock 내부에서 실행될 작업 함수들 ─────────────────────
+_do_status() {
+  bootstrap_run
+  safety_check_established >/dev/null 2>&1 || true
+  status_show
+}
+
+_do_interactive() {
+  bootstrap_run
+  safety_check_established
+  main_menu
+}
+
+main() {
+  # --help 는 루트 없이도 볼 수 있어야 자연스럽다
+  case "${1:-}" in
+    --help|-h) print_help; exit 0 ;;
+  esac
+
+  require_root
+
+  # 비대화형 분기
+  case "${1:-}" in
+    status)
+      with_lock _do_status
+      exit 0
+      ;;
+    rollback)
+      shift
+      if [[ -n "${1:-}" ]]; then
+        with_lock rollback_by_index "$1"
+      else
+        with_lock rollback_list
+      fi
+      exit $?
+      ;;
+    '')
+      with_lock _do_interactive
+      ;;
+    *)
+      err "알 수 없는 명령: $1"
+      print_help
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
