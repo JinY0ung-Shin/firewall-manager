@@ -36,9 +36,10 @@ persist_backup() {
 persist_dump_live_to_config() {
   mkdir -p "$FW_CONFIG_DIR"
 
-  # iptables (우리 스코프만)
+  # iptables (우리 스코프만) — PIPESTATUS로 iptables-save 실패 감지
   local tmp_ipt; tmp_ipt=$(mktemp)
-  if ! iptables-save -t filter 2>/dev/null | scope_filter_iptables > "$tmp_ipt"; then
+  iptables-save -t filter 2>/dev/null | scope_filter_iptables > "$tmp_ipt"
+  if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
     err "iptables-save 실패"
     rm -f "$tmp_ipt"
     return 1
@@ -53,6 +54,11 @@ persist_dump_live_to_config() {
     : > "$tmp_ips"
   else
     ipset save 2>/dev/null | scope_filter_ipset "${managed[@]}" > "$tmp_ips"
+    if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+      err "ipset save 실패"
+      rm -f "$tmp_ips"
+      return 1
+    fi
   fi
   mv "$tmp_ips" "$FW_IPSETS_FILE"
 }
