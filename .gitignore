@@ -3,6 +3,7 @@ config/
 
 # AI session files
 .ccb/
+.omc/
 
 # temp files
 *.tmp
