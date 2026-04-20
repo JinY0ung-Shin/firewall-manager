@@ -1,422 +1,163 @@
 #!/usr/bin/env bash
-# common.sh - 색상, 로깅, 메뉴, 프롬프트, 테이블 유틸리티
+# lib/common.sh — 색상/로그/메뉴/flock 래퍼
+# 도메인 로직 없음.
 
-# ── 색상 ──────────────────────────────────────────
+set -u
+
+# ── 색상 ───────────────────────────────────────────────────
 if [[ -t 1 ]]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[0;33m'
-    BLUE='\033[0;34m'
-    CYAN='\033[0;36m'
-    BOLD='\033[1m'
-    DIM='\033[2m'
-    RESET='\033[0m'
+  C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
+  C_BLU=$'\033[34m'; C_DIM=$'\033[2m';  C_BLD=$'\033[1m'
+  C_RST=$'\033[0m'
 else
-    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' RESET=''
+  C_RED=''; C_GRN=''; C_YEL=''; C_BLU=''; C_DIM=''; C_BLD=''; C_RST=''
 fi
 
-# ── 로깅 ──────────────────────────────────────────
-info()    { echo -e "  ${BLUE}i${RESET}  $*"; }
-success() { echo -e "  ${GREEN}✓${RESET}  $*"; }
-warn()    { echo -e "  ${YELLOW}!${RESET}  $*"; }
-error()   { echo -e "  ${RED}✗${RESET}  $*" >&2; }
-fatal()   { error "$*"; exit 1; }
+# ── 로그 (stderr) ─────────────────────────────────────────
+info()  { printf '%s\n' "$*" >&2; }
+warn()  { printf '%s! %s%s\n' "$C_YEL" "$*" "$C_RST" >&2; }
+err()   { printf '%s✗ %s%s\n' "$C_RED" "$*" "$C_RST" >&2; }
+ok()    { printf '%s✓ %s%s\n' "$C_GRN" "$*" "$C_RST" >&2; }
+dim()   { printf '%s%s%s\n' "$C_DIM" "$*" "$C_RST" >&2; }
 
-# ── 화면 ──────────────────────────────────────────
-clear_screen() {
-    printf '\033[2J\033[H'
+# ── 확인 프롬프트 ──────────────────────────────────────────
+# confirm "질문" [default=N]  → 0=yes, 1=no
+confirm() {
+  local prompt="$1" default="${2:-N}" reply hint
+  case "$default" in Y|y) hint="[Y/n]";; *) hint="[y/N]";; esac
+  read -r -p "$(printf '%s %s ' "$prompt" "$hint")" reply || return 1
+  [[ -z "$reply" ]] && reply="$default"
+  [[ "$reply" =~ ^[Yy]$ ]]
 }
 
-print_header() {
-    local title="$1"
-    local pad_len=$(( 40 - ${#title} ))
-    (( pad_len < 1 )) && pad_len=1
-    echo ""
-    echo -e "  ${DIM}--${RESET} ${BOLD}${title}${RESET} ${DIM}$(printf -- '-%.0s' $(seq 1 "$pad_len"))${RESET}"
-    echo ""
-}
+# ── 화살표 키 메뉴 ─────────────────────────────────────────
+# arrow_menu "프롬프트" item1 item2 ...
+# 선택된 index(0-based)를 stdout으로.
+arrow_menu() {
+  local prompt="$1"; shift
+  local -a items=("$@")
+  local n=${#items[@]} idx=0 key
+  [[ $n -eq 0 ]] && return 1
 
-print_banner() {
-    clear_screen
-    echo ""
-    echo -e "  ${BOLD}+==========================================+${RESET}"
-    echo -e "  ${BOLD}|       Firewall Manager v${VERSION}          |${RESET}"
-    echo -e "  ${BOLD}+==========================================+${RESET}"
-    echo ""
-    echo -e "  ${DIM}INPUT/DOCKER-USER 체인만 관리합니다.${RESET}"
-    echo ""
-}
-
-print_separator() {
-    echo -e "  ${DIM}------------------------------------------${RESET}"
-}
-
-# ── 명령어 미리보기 ──────────────────────────────
-preview_cmd() {
-    echo ""
-    echo -e "  ${DIM}-> 실행될 명령어:${RESET}"
-    for cmd in "$@"; do
-        echo -e "    ${CYAN}${cmd}${RESET}"
-    done
-    echo ""
-}
-
-# ── 방향키 메뉴 (공통 엔진) ───────────────────────
-# _arrow_menu selected_index "옵션1" "옵션2" ... "마지막옵션(돌아가기/종료)"
-# 커서를 숨기고, 방향키로 이동, Enter로 선택
-# 반환: 선택된 인덱스 (0부터)
-_arrow_menu() {
-    local cur=$1; shift
-    local items=("$@")
-    local total=${#items[@]}
-
-    # 커서 숨기기
-    printf '\033[?25l'
-    # 종료 시 커서 복원
-    trap 'printf "\033[?25h"' RETURN
-
-    # 초기 렌더링
-    _arrow_menu_render "$cur" "${items[@]}"
-
-    while true; do
-        # 키 입력 읽기
-        local key
-        IFS= read -rsn1 key
-
-        if [[ "$key" == $'\x1b' ]]; then
-            read -rsn2 -t 0.01 key
-            case "$key" in
-                '[A') (( cur > 0 )) && cur=$((cur - 1)) ;;           # Up
-                '[B') (( cur < total - 1 )) && cur=$((cur + 1)) ;;   # Down
-            esac
-        elif [[ "$key" == "" ]]; then
-            # Enter
-            # 렌더링 영역 지우기
-            printf '\033[%dA' "$total"
-            for (( i=0; i<total; i++ )); do
-                printf '\033[2K\n'
-            done
-            printf '\033[%dA' "$total"
-            printf '\033[?25h'
-            return "$cur"
-        fi
-
-        # 다시 그리기: 위로 올라가서 덮어쓰기
-        printf '\033[%dA' "$total"
-        _arrow_menu_render "$cur" "${items[@]}"
-    done
-}
-
-_arrow_menu_render() {
-    local cur=$1; shift
-    local items=("$@")
-
-    for i in "${!items[@]}"; do
-        printf '\033[2K'  # 줄 지우기
-        if [[ $i -eq $cur ]]; then
-            echo -e "  ${CYAN}▸${RESET} ${BOLD}${items[$i]}${RESET}"
-        else
-            echo -e "    ${items[$i]}"
-        fi
-    done
-}
-
-# ── 메뉴 선택 ────────────────────────────────────
-# menu_select "제목" "옵션1" "옵션2" ...
-# 반환: 선택된 번호 (1부터), 0 = 돌아가기
-menu_select() {
-    local title="$1"; shift
-    local options=("$@")
-
-    clear_screen
-    print_header "$title"
-
-    # 옵션 + 돌아가기를 합쳐서 배열 구성
-    local items=()
-    for opt in "${options[@]}"; do
-        items+=("$opt")
-    done
-    items+=("${DIM}<- 돌아가기${RESET}")
-
-    _arrow_menu 0 "${items[@]}"
-    local idx=$?
-
-    # 마지막 항목 = 돌아가기 = 0
-    if (( idx == ${#options[@]} )); then
-        return 0
-    fi
-    return $((idx + 1))
-}
-
-# 메인 메뉴 전용 (종료 표시)
-menu_select_main() {
-    local options=("$@")
-
-    local items=()
-    for opt in "${options[@]}"; do
-        items+=("$opt")
-    done
-    items+=("${DIM}종료${RESET}")
-
-    _arrow_menu 0 "${items[@]}"
-    local idx=$?
-
-    if (( idx == ${#options[@]} )); then
-        return 0
-    fi
-    return $((idx + 1))
-}
-
-# ── 입력 프롬프트 ────────────────────────────────
-# prompt_input "질문" [기본값]
-# 결과: $REPLY
-prompt_input() {
-    local question="$1"
-    local default="${2:-}"
-
-    if [[ -n "$default" ]]; then
-        read -rp "  ${question} [${default}]: " REPLY
-        REPLY="${REPLY:-$default}"
+  tput civis 2>/dev/null || true
+  # 초기 렌더
+  printf '%s\n' "$prompt" >&2
+  local i
+  for ((i=0; i<n; i++)); do
+    if [[ $i -eq $idx ]]; then
+      printf '  %s> %s%s\n' "$C_BLU" "${items[i]}" "$C_RST" >&2
     else
-        while true; do
-            read -rp "  ${question}: " REPLY
-            if [[ -n "$REPLY" ]]; then
-                return 0
-            fi
-            error "값을 입력해 주세요."
-        done
+      printf '    %s\n' "${items[i]}" >&2
     fi
-}
+  done
 
-# prompt_input_optional "질문"
-prompt_input_optional() {
-    local question="$1"
-    read -rp "  ${question}: " REPLY
-}
-
-# ── 확인 프롬프트 ────────────────────────────────
-# prompt_confirm "질문" -> 0(yes) / 1(no)
-prompt_confirm() {
-    local question="$1"
-    local answer
-
-    while true; do
-        read -rp "  ${question} (y/n): " answer
-        case "$answer" in
-            [yY]|[yY][eE][sS]) return 0 ;;
-            [nN]|[nN][oO])     return 1 ;;
-            *) error "y 또는 n을 입력하세요." ;;
-        esac
-    done
-}
-
-# 위험한 작업 확인 (이름 입력 필요)
-prompt_confirm_dangerous() {
-    local resource_name="$1"
-    local message="$2"
-    local answer
-
-    echo ""
-    warn "$message"
-    echo ""
-    read -rp "  확인하려면 '${resource_name}'을(를) 입력하세요: " answer
-
-    [[ "$answer" == "$resource_name" ]]
-}
-
-# 매우 위험한 작업 확인 (yes 정확히 입력)
-prompt_confirm_critical() {
-    local message="$1"
-    local answer
-
-    echo ""
-    warn "$message"
-    echo ""
-    read -rp "  정말 진행하시겠습니까? (yes를 정확히 입력): " answer
-
-    [[ "$answer" == "yes" ]]
-}
-
-# ── 선택 프롬프트 ────────────────────────────────
-# prompt_choice "질문" "옵션1" "옵션2" ...
-# 반환: 선택된 번호 (1부터)
-prompt_choice() {
-    local question="$1"; shift
-    local options=("$@")
-
-    echo -e "  ${BOLD}?${RESET} ${question}"
-    echo ""
-
-    local items=("${options[@]}")
-    items+=("${DIM}<- 돌아가기${RESET}")
-
-    _arrow_menu 0 "${items[@]}"
-    local idx=$?
-
-    if (( idx == ${#options[@]} )); then
-        return 0
+  while true; do
+    IFS= read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then
+      IFS= read -rsn2 -t 0.01 key
+      case "$key" in
+        '[A') idx=$(( (idx - 1 + n) % n )) ;;
+        '[B') idx=$(( (idx + 1) % n )) ;;
+      esac
+    elif [[ -z $key ]]; then
+      break  # Enter
+    elif [[ $key == q ]]; then
+      tput cnorm 2>/dev/null || true
+      echo -1; return 2
     fi
-    return $((idx + 1))
+    # 다시 그리기: 위로 n줄 이동 후 재렌더
+    printf '\033[%dA' "$n" >&2
+    for ((i=0; i<n; i++)); do
+      printf '\033[2K' >&2
+      if [[ $i -eq $idx ]]; then
+        printf '  %s> %s%s\n' "$C_BLU" "${items[i]}" "$C_RST" >&2
+      else
+        printf '    %s\n' "${items[i]}" >&2
+      fi
+    done
+  done
+  tput cnorm 2>/dev/null || true
+  echo "$idx"
 }
 
-# ── 테이블 출력 ──────────────────────────────────
-# print_table "헤더1|헤더2|헤더3" "값1|값2|값3" ...
-print_table() {
-    local header="$1"; shift
-    local rows=("$@")
+# ── 체크박스 멀티선택 ───────────────────────────────────────
+# checkbox_menu "프롬프트" item1 item2 ...
+# 선택된 index들을 공백 구분으로 stdout. 전체 기본 체크됨.
+checkbox_menu() {
+  local prompt="$1"; shift
+  local -a items=("$@")
+  local n=${#items[@]} idx=0 key
+  [[ $n -eq 0 ]] && return 1
+  local -a checked
+  for ((i=0; i<n; i++)); do checked[i]=1; done
 
-    # 헤더 파싱
-    IFS='|' read -ra headers <<< "$header"
-    local num_cols=${#headers[@]}
-
-    # 각 컬럼 최대 너비 계산
-    local -a widths
-    for i in "${!headers[@]}"; do
-        widths[$i]=${#headers[$i]}
-    done
-
-    for row in "${rows[@]}"; do
-        IFS='|' read -ra cols <<< "$row"
-        for i in "${!cols[@]}"; do
-            local len=${#cols[$i]}
-            if (( len > ${widths[$i]:-0} )); then
-                widths[$i]=$len
-            fi
-        done
-    done
-
-    # 헤더 출력
-    echo ""
-    local header_line="  "
-    for i in "${!headers[@]}"; do
-        header_line+="$(printf "${BOLD}%-$((widths[$i] + 3))s${RESET}" "${headers[$i]}")"
-    done
-    echo -e "$header_line"
-
-    # 구분선
-    local sep_line="  "
-    for i in "${!headers[@]}"; do
-        sep_line+="$(printf '%-s' "$(printf -- '-%.0s' $(seq 1 $((widths[$i] + 3))))")"
-    done
-    echo -e "  ${DIM}${sep_line}${RESET}"
-
-    # 행 출력
-    if [[ ${#rows[@]} -eq 0 ]]; then
-        echo -e "  ${DIM}  (비어 있음)${RESET}"
+  tput civis 2>/dev/null || true
+  printf '%s (스페이스=토글, 엔터=확정, q=취소)\n' "$prompt" >&2
+  for ((i=0; i<n; i++)); do
+    local mark; [[ ${checked[i]} -eq 1 ]] && mark='[x]' || mark='[ ]'
+    if [[ $i -eq $idx ]]; then
+      printf '  %s> %s %s%s\n' "$C_BLU" "$mark" "${items[i]}" "$C_RST" >&2
     else
-        for row in "${rows[@]}"; do
-            IFS='|' read -ra cols <<< "$row"
-            local line="  "
-            for i in "${!headers[@]}"; do
-                local val="${cols[$i]:-}"
-                if [[ "$val" == "ACCEPT" ]]; then
-                    line+="$(printf "${GREEN}%-$((widths[$i] + 3))s${RESET}" "$val")"
-                elif [[ "$val" == "DROP" || "$val" == "REJECT" ]]; then
-                    line+="$(printf "${RED}%-$((widths[$i] + 3))s${RESET}" "$val")"
-                else
-                    line+="$(printf "%-$((widths[$i] + 3))s" "$val")"
-                fi
-            done
-            echo -e "$line"
-        done
+      printf '    %s %s\n' "$mark" "${items[i]}" >&2
     fi
-    echo ""
-}
+  done
 
-# ── 전제조건 확인 ────────────────────────────────
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        fatal "root 권한이 필요합니다. 레포 디렉터리에서 'sudo ./fw' 로 실행하세요."
+  while true; do
+    IFS= read -rsn1 key
+    if [[ $key == $'\x1b' ]]; then
+      IFS= read -rsn2 -t 0.01 key
+      case "$key" in
+        '[A') idx=$(( (idx - 1 + n) % n )) ;;
+        '[B') idx=$(( (idx + 1) % n )) ;;
+      esac
+    elif [[ $key == ' ' ]]; then
+      checked[idx]=$(( 1 - ${checked[idx]} ))
+    elif [[ -z $key ]]; then
+      break
+    elif [[ $key == q ]]; then
+      tput cnorm 2>/dev/null || true
+      return 2
     fi
-}
-
-check_dependencies() {
-    local missing=()
-    for cmd in iptables iptables-save iptables-restore ipset; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing+=("$cmd")
-        fi
+    printf '\033[%dA' "$n" >&2
+    for ((i=0; i<n; i++)); do
+      printf '\033[2K' >&2
+      local mark; [[ ${checked[i]} -eq 1 ]] && mark='[x]' || mark='[ ]'
+      if [[ $i -eq $idx ]]; then
+        printf '  %s> %s %s%s\n' "$C_BLU" "$mark" "${items[i]}" "$C_RST" >&2
+      else
+        printf '    %s %s\n' "$mark" "${items[i]}" >&2
+      fi
     done
+  done
+  tput cnorm 2>/dev/null || true
 
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        error "필요한 도구가 설치되어 있지 않습니다:"
-        for cmd in "${missing[@]}"; do
-            echo "    - $cmd"
-        done
-        echo ""
-        info "설치: sudo apt install iptables ipset"
-        exit 1
-    fi
+  local out=""
+  for ((i=0; i<n; i++)); do
+    [[ ${checked[i]} -eq 1 ]] && out+="$i "
+  done
+  printf '%s\n' "${out% }"
 }
 
-detect_iptables_backend() {
-    # iptables-nft vs iptables-legacy 감지
-    local version
-    version=$(iptables --version 2>/dev/null || true)
-    if [[ "$version" == *"nf_tables"* ]]; then
-        IPTABLES_BACKEND="nft"
-    else
-        IPTABLES_BACKEND="legacy"
-    fi
+# ── flock 래퍼 ────────────────────────────────────────────
+# with_lock <command...>  — /var/lock/fw-manager.lock 을 non-blocking으로 취득. 실패하면 exit 1.
+FW_LOCK=${FW_LOCK:-/var/lock/fw-manager.lock}
+with_lock() {
+  exec 9>"$FW_LOCK" || { err "락 파일 생성 실패: $FW_LOCK"; exit 1; }
+  if ! flock -n 9; then
+    err "다른 fw 인스턴스가 실행 중 (lock: $FW_LOCK)"
+    exit 1
+  fi
+  "$@"
+  local rc=$?
+  flock -u 9
+  exec 9>&-
+  return $rc
 }
 
-# ── ipset 타입 ───────────────────────────────────
-# 지원하는 ipset 타입
-SUPPORTED_IPSET_TYPES="hash:net|hash:ip"
+# ── 일시정지 ───────────────────────────────────────────────
+pause() { read -r -p "엔터를 누르면 계속..." _; }
 
-# conf 파일에서 ipset 타입 읽기 (기본값: hash:net, 하위 호환)
-get_team_type() {
-    local team="$1"
-    local conf="${CONFIG_DIR}/teams/${team}.conf"
-    local type_line
-    type_line=$(grep '^# Type: ' "$conf" 2>/dev/null | head -1)
-    if [[ -n "$type_line" ]]; then
-        echo "${type_line#\# Type: }"
-    else
-        echo "hash:net"
-    fi
-}
-
-# ipset 타입이 지원되는지 확인
-is_supported_ipset_type() {
-    local t="$1"
-    [[ "$t" == "hash:net" || "$t" == "hash:ip" ]]
-}
-
-# ── 설정 디렉토리 초기화 ─────────────────────────
-init_config_dir() {
-    mkdir -p "${CONFIG_DIR}"
-    mkdir -p "${CONFIG_DIR}/teams"
-    mkdir -p "${CONFIG_DIR}/backups"
-}
-
-# ── SSH 정보 ─────────────────────────────────────
-get_ssh_info() {
-    SSH_CLIENT_IP=""
-    SSH_CLIENT_PORT="${SSH_PORT:-22}"
-    local ssh_port_from_client=false
-
-    if [[ -n "${SSH_CLIENT:-}" ]]; then
-        local _client_port _server_port
-        read -r SSH_CLIENT_IP _client_port _server_port <<< "$SSH_CLIENT"
-        if [[ -n "$_server_port" && "$_server_port" =~ ^[0-9]+$ ]]; then
-            SSH_CLIENT_PORT="$_server_port"
-            ssh_port_from_client=true
-        fi
-    fi
-
-    # sshd 포트 확인
-    if ! $ssh_port_from_client && command -v ss &>/dev/null; then
-        local sshd_port
-        sshd_port=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | grep -oP ':\K[0-9]+' | head -1)
-        if [[ -n "$sshd_port" ]]; then
-            SSH_CLIENT_PORT="$sshd_port"
-        fi
-    fi
-}
-
-# ── 일시 정지 ────────────────────────────────────
-pause() {
-    echo ""
-    read -rp "  계속하려면 Enter를 누르세요..." _
+# ── 루트 확인 ──────────────────────────────────────────────
+require_root() {
+  [[ $EUID -eq 0 ]] || { err "root 권한 필요 (sudo)"; exit 1; }
 }

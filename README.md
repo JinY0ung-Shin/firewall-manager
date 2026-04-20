@@ -1,22 +1,20 @@
-# fw - Interactive Firewall Manager
+# fw - Interactive Firewall Manager (v2.0)
 
-`fw`는 `iptables`와 `ipset`을 잘 몰라도 방화벽을 쉽게 관리하고,
-현재 서버의 방화벽 설정을 다른 서버로 편하게 옮길 수 있게 해주는
-**대화형 CLI 도구**입니다.
+`fw`는 `iptables`와 `ipset`을 잘 몰라도 방화벽을 안전하게 운영할 수 있게 해주는 **대화형 CLI 도구**입니다.
 
-관리 범위는 실무에서 자주 건드리는 `INPUT`, `DOCKER-USER`, `ipset(hash:net)`에 집중합니다.
+관리 범위는 실무에서 자주 건드리는 **`INPUT`**(들어오는 트래픽), **`DOCKER-USER`**(컨테이너로 가는 트래픽), **`OUTPUT`**(나가는 트래픽 — 차단 전용), 그리고 **`ipset(hash:net)`** 기반 팀 관리에 집중합니다.
 
 ## 핵심 목표
 
-1. `iptables` / `ipset` 명령을 몰라도 메뉴 기반으로 안전하게 운영할 수 있게 한다.
-2. live 방화벽 상태를 파일로 저장하고, 다른 서버에 쉽게 복원하거나 동기화할 수 있게 한다.
+1. `iptables` / `ipset` 문법을 몰라도 메뉴 기반으로 안전하게 운영할 수 있게 한다.
+2. 자동 저장 + 타임스탬프 백업으로 **언제든 되돌릴 수 있게** 한다.
 
 ## 이런 상황에 적합합니다
 
 - 운영자가 `iptables` 문법을 외우지 않고도 허용/차단 규칙을 관리해야 할 때
 - 허용 대상 IP를 팀 단위(`ipset`)로 관리하고 싶을 때
-- 현재 서버의 방화벽 상태를 새 서버로 이전해야 할 때
-- 사람이 직접 `iptables`, `ipset`을 수정한 뒤 파일 상태와 다시 맞춰야 할 때
+- 특정 외부 주소(사내 프록시 등)로 **나가는 트래픽을 선택적으로 차단**해야 할 때
+- 변경 후 문제가 생기면 최근 상태로 **빠르게 롤백**하고 싶을 때
 
 ## 요구사항
 
@@ -31,173 +29,114 @@ sudo apt install iptables ipset
 
 ## 사용 방식
 
-이 도구는 **레포 디렉터리에서 직접 실행**하는 것을 기준으로 합니다.
-시스템 경로(`/usr/local/bin`, `/etc/fw`)에 설치하지 않고, `git pull` 후 같은 폴더에서 `./fw`를 실행하면 됩니다.
+레포 디렉터리에서 직접 실행하는 것을 기준으로 합니다. 시스템 경로에 설치하지 않고, `git pull` 후 같은 폴더에서 `./fw`를 실행하면 됩니다.
 
 ```bash
 git pull
 sudo ./fw
 ```
 
-설정 파일은 레포 안의 `./config/`를 사용합니다.
-처음 실행할 때 `config/iptables.rules` 가 없으면 현재 서버의 `INPUT` / `DOCKER-USER` 상태를 자동으로 가져옵니다.
+설정 파일은 레포 안의 `./config/` 를 사용합니다. 첫 실행 시 현재 서버의 `INPUT` / `DOCKER-USER` / `OUTPUT` 상태와 기존 `ipset` 목록을 스캔해서 관리 대상을 고르게 합니다. **live 상태는 첫 실행에서 변경하지 않습니다.**
 
 ## 사용법
 
+### 대화형
+
 ```bash
 sudo ./fw
 ```
 
 ```
-  +==========================================+
-  |       Firewall Manager v1.0.0          |
-  +==========================================+
+  +======================================+
+  |       Firewall Manager v2.0.0        |
+  +======================================+
 
-    1)  규칙 관리 (iptables)
-    2)  팀 관리 (ipset)
-    3)  저장 / 불러오기
-    4)  동기화 (live ↔ config)
-    5)  사전 점검 (restore 전)
-    6)  현재 상태 보기
-
-    0)  종료
+    1) 규칙 관리
+    2) 팀 관리 (ipset)
+    3) 롤백 (백업에서 복원)
+    4) 현재 상태 보기
+    0) 종료
 ```
 
-### 비대화형 모드
+### 비대화형
 
 ```bash
-sudo ./fw status       # 상태 보기
-sudo ./fw preflight    # 복원/이전 전 사전 점검
-sudo ./fw save         # 현재 규칙 저장
-sudo ./fw load         # 저장된 규칙 불러오기
-sudo ./fw sync         # 동기화 메뉴
-sudo ./fw export       # 이전용 번들 생성
-sudo ./fw import FILE  # 이전 번들 가져오기
-sudo ./fw --help       # 도움말
+sudo ./fw status          # 현재 상태 표시
+sudo ./fw rollback        # 백업 목록 표시
+sudo ./fw rollback 2      # 2번째 최신 백업으로 복원
+sudo ./fw --help          # 도움말
 ```
 
-## 업데이트
+## 저장/복원 모델 — 자동 저장
 
-```bash
-git pull
-```
+별도의 `save` / `load` 명령이 없습니다. 대신:
 
-업데이트 후에도 같은 디렉터리에서 `sudo ./fw ...`로 실행하면 됩니다.
-
-## 서버 이전 흐름
-
-다른 서버로 방화벽 설정을 옮길 때는 보통 아래 흐름으로 사용합니다.
-
-실전형 단계별 가이드는 [MIGRATION.md](/home/jinyoung/firewall-manager/MIGRATION.md) 를 참고하세요.
-
-1. 기존 서버에서 현재 상태를 저장합니다.
-
-```bash
-sudo ./fw save
-```
-
-2. 번들을 만들거나 `config/` 디렉터리를 새 서버로 복사합니다.
-
-```bash
-sudo ./fw export ./fw-bundle.tar.gz
-scp -r ./config user@new-server:/path/to/firewall-manager/
-```
-
-3. 새 서버에서 레포를 준비한 뒤 저장된 설정을 적용합니다.
-
-```bash
-git pull
-sudo ./fw import ./fw-bundle.tar.gz
-sudo ./fw preflight
-sudo ./fw load
-```
-
-이미 점검을 마쳤다면 한 번에 적용할 수도 있습니다.
-
-```bash
-sudo ./fw import ./fw-bundle.tar.gz --apply
-```
-
-직접 `iptables`나 `ipset`을 수정한 뒤 파일 상태와 비교해서 맞추고 싶다면
-`sudo ./fw sync`로 `live ↔ config` 동기화를 진행할 수 있습니다.
-
-## 서버 이전 전 체크리스트
-
-- 대상 서버에도 `iptables`, `ipset`이 설치되어 있어야 합니다.
-- 이 도구는 `INPUT`, `DOCKER-USER`, `ipset(hash:net)` 중심으로만 복원합니다.
-- `DOCKER-USER`는 Docker가 실행 중인 서버에서만 복원 가능합니다.
-- SSH 포트가 서버마다 다르면 적용 전에 허용 규칙을 한 번 더 확인하는 것이 안전합니다.
-- UFW, Docker, 배포판 기본 규칙처럼 서버 환경에 따라 달라지는 항목은 복원 후 검토가 필요할 수 있습니다.
+- 메뉴로 규칙/팀을 **바꾸면** 즉시 live에 적용되고, 변경 후 live 상태가 `config/` 로 덤프됩니다.
+- 모든 변경 **직전에** `config/backups/<timestamp>.tar.gz` 가 자동 생성됩니다 (최근 20개 유지).
+- 되돌리고 싶으면 메뉴의 "롤백" 에서 원하는 백업을 선택합니다.
+- 실패 시 자동으로 백업에서 복원됩니다 (트랜잭셔널).
 
 ## 주요 기능
 
-### 쉽게 쓰는 방화벽 관리
-- INPUT / DOCKER-USER 체인 규칙 추가·삭제
-- 소스: IP, CIDR, 팀(ipset), 전체
-- 단계별 위저드로 안내
-- 팀(ipset) 기반으로 "허용 대상 묶음"을 추상화해서 관리 가능
+### 규칙 관리
+- **INPUT / DOCKER-USER**: 소스 기반 허용/차단 추가
+- **OUTPUT**: 목적지 기반 **차단만** 추가 (자기-차단 방지)
+- 소스/목적지: 단일 IP, CIDR, 팀(ipset), 전체
+- 규칙 삭제는 현재 live에서 목록을 보여주고 선택
 
 ### 팀 관리 (ipset)
-- 팀 생성·삭제, 멤버 추가·제거
-- IP 추가 시 **설명(comment) 필수** — 누구의 IP인지 항상 식별 가능
-
-### 서버 이전을 위한 저장 / 복원
-- 현재 iptables / ipset 상태를 `./config/` 기준으로 정리해 저장
-- 첫 실행 시 기존 live iptables 상태를 자동 bootstrap
-- 백업 생성·복원 (최근 10개 자동 유지)
-- tar.gz 기반 이전 번들 export/import 지원
-- 트랜잭셔널 로드: 실패 시 자동 롤백
-- 다른 서버에서 `config/`만 있으면 같은 기준으로 복원 가능
-
-### 동기화
-- `iptables`나 `ipset`을 직접 수정한 경우 **live ↔ config 차이를 감지**
-- 방향 선택: live → config 또는 config → live
-
-### 사전 점검
-- 복원 전 필수 명령, 저장된 규칙 파일, 팀 파일, DOCKER-USER 체인 상태를 확인
-- 대상 서버에서 바로 적용해도 되는지 빠르게 판단 가능
+- 팀 생성/삭제, 멤버 추가/제거
+- 멤버 추가 시 **설명(comment) 필수** — ipset 네이티브 comment로 저장
+- 팀별 `.conf` 파일 없음: `config/ipsets.rules` 하나로 관리
 
 ### 안전장치
-- SSH 접속 차단 규칙 추가 시 경고
-- DROP/REJECT 규칙 추가 후 **60초 안전 타이머** (미확인 시 자동 제거)
-- ESTABLISHED,RELATED 규칙 누락 감지
+- SSH 차단 가능성 있는 규칙 추가 시 경고
+- DROP/REJECT 추가 후 **60초 안전 타이머** — 미확인 시 자동 롤백
+- `ESTABLISHED,RELATED` 누락 감지 + 자동 삽입 제안
+- 변경 직전 자동 백업 + 실패 시 자동 롤백
+- `flock` 으로 동시 실행 방지
 
-## 예시
-
-- 서버 이전 절차를 한 번에 따라가려면 [MIGRATION.md](/home/jinyoung/firewall-manager/MIGRATION.md) 를 참고하세요.
-- 실사용 시나리오는 [examples/SCENARIOS.md](/home/jinyoung/firewall-manager/examples/SCENARIOS.md) 에 정리했습니다.
-- 부팅 시 자동 복원이 필요하면 [examples/fw-restore.service](/home/jinyoung/firewall-manager/examples/fw-restore.service) 예시를 참고할 수 있습니다.
+### 롤백
+- 최근 20개 백업에서 선택
+- 복원 직전 현재 상태도 `pre-rollback` 백업으로 저장
 
 ## 범위와 철학
 
-- 이 도구는 모든 체인을 추상화하지 않고 `INPUT`, `DOCKER-USER` 중심으로 다룹니다.
-- 복잡한 룰셋 전체를 자동 모델링하기보다, 운영자가 자주 바꾸는 영역을 쉽게 다루는 데 집중합니다.
-- `ipset` 팀 메타데이터를 파일로 함께 관리해서 서버 간 이전 시 의미를 잃지 않도록 합니다.
+- `INPUT`, `DOCKER-USER`, `OUTPUT`(차단만), `ipset(hash:net)` 만 관리합니다.
+- `FORWARD`, `nat`, `mangle`, `DOCKER` 등 Docker 자동 생성 체인은 **읽지도 쓰지도 않습니다**.
+- 커스텀 파싱 대신 `iptables-save` / `ipset save` **네이티브 포맷**을 그대로 사용합니다.
+- 복원 시 `iptables-restore --noflush` 로 **파일에 선언된 체인만** 비우고 적용하므로 다른 체인에 영향 없습니다.
 
 ## 디렉토리 구조
 
 ```
 firewall-manager/
-├── fw                  # 메인 스크립트 (엔트리포인트)
-├── MIGRATION.md        # 서버 이전 실전 가이드
+├── fw                   # 엔트리포인트
+├── SMOKE_TEST.md        # 수동 검증 체크리스트
 ├── examples/
-│   ├── SCENARIOS.md    # 실사용 시나리오 예시
 │   └── fw-restore.service
 ├── lib/
-│   ├── bundle.sh       # 이전 번들 export/import
-│   ├── common.sh       # 색상, 로깅, 메뉴, 프롬프트
-│   ├── preflight.sh    # 복원 전 사전 점검
-│   ├── validators.sh   # 입력 검증, SSH 충돌 감지
-│   ├── rule.sh         # iptables 규칙 관리
-│   ├── team.sh         # ipset 팀 관리
-│   ├── persist.sh      # 저장/불러오기/백업/복원
-│   ├── status.sh       # 상태 대시보드
-│   └── sync.sh         # live ↔ config 동기화
-└── config/             # (자동 생성) 규칙·팀 설정 저장
-    ├── iptables.rules
-    ├── teams/*.conf
-    └── backups/
+│   ├── common.sh        # 색상, 로그, 메뉴, flock
+│   ├── scope.sh         # iptables-save/ipset save 필터
+│   ├── persist.sh       # backup/dump/restore/transaction
+│   ├── safety.sh        # SSH 경고, 60초 타이머
+│   ├── bootstrap.sh     # 첫 실행 import
+│   ├── team.sh          # ipset 팀 관리
+│   ├── rule.sh          # iptables 규칙 편집
+│   ├── rollback.sh      # 백업 목록 + 복원
+│   └── status.sh        # 상태 요약
+├── docs/
+│   └── superpowers/     # 재작성 설계/구현 계획
+└── config/              # (자동 생성)
+    ├── iptables.rules   # iptables-save 네이티브 포맷
+    ├── ipsets.rules     # ipset save 네이티브 포맷
+    └── backups/         # 타임스탬프 tar.gz × 최근 20개
 ```
+
+## 예시
+
+- 부팅 시 자동 복원이 필요하면 [examples/fw-restore.service](./examples/fw-restore.service) 예시를 참고할 수 있습니다.
+- 새 버전 동작 검증은 [SMOKE_TEST.md](./SMOKE_TEST.md) 를 따라가면 됩니다.
 
 ## 라이선스
 

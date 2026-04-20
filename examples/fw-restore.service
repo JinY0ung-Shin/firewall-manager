@@ -7,7 +7,7 @@ ConditionPathExists=/path/to/firewall-manager/config/iptables.rules
 [Service]
 Type=oneshot
 WorkingDirectory=/path/to/firewall-manager
-ExecStart=/path/to/firewall-manager/fw load --quiet
+ExecStart=/path/to/firewall-manager/fw restore
 RemainAfterExit=yes
 
 [Install]
