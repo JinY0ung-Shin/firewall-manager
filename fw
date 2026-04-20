@@ -35,6 +35,7 @@ fw — Interactive Firewall Manager
   sudo ./fw                 대화형 메뉴
   sudo ./fw status          현재 상태 표시
   sudo ./fw rollback [N]    백업 목록 or 인덱스 복원
+  sudo ./fw restore         config/ 의 규칙을 live에 재적용 (부팅 시 자동복원용)
   sudo ./fw --help          이 도움말
 
 관리 범위: INPUT, DOCKER-USER, OUTPUT(차단만), ipset(hash:net).
@@ -101,6 +102,10 @@ main() {
       else
         with_lock rollback_list
       fi
+      exit $?
+      ;;
+    restore)
+      with_lock persist_restore_from_config
       exit $?
       ;;
     '')
