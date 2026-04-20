@@ -87,7 +87,11 @@ _rule_add_source_based() {
     persist_rollback_to "$backup"
     return 1
   fi
-  persist_dump_live_to_config
+  if ! persist_dump_live_to_config; then
+    err "config 덤프 실패, 백업에서 롤백 중..."
+    persist_rollback_to "$backup"
+    return 1
+  fi
 
   if [[ "$jump" == "DROP" || "$jump" == "REJECT" ]]; then
     safety_arm_confirm_timer "$backup" || return 1
@@ -118,7 +122,11 @@ _rule_add_output_block() {
     persist_rollback_to "$backup"
     return 1
   fi
-  persist_dump_live_to_config
+  if ! persist_dump_live_to_config; then
+    err "config 덤프 실패, 백업에서 롤백 중..."
+    persist_rollback_to "$backup"
+    return 1
+  fi
   ok "OUTPUT 차단 규칙 추가 완료"
 }
 
@@ -147,7 +155,11 @@ _rule_delete_from_chain() {
     persist_rollback_to "$backup"
     return 1
   fi
-  persist_dump_live_to_config
+  if ! persist_dump_live_to_config; then
+    err "config 덤프 실패, 백업에서 롤백 중..."
+    persist_rollback_to "$backup"
+    return 1
+  fi
   ok "규칙 삭제 완료"
 }
 
