@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 # lib/rule.sh — iptables 규칙 편집 (INPUT, DOCKER-USER, OUTPUT)
 
-# ── 내부 헬퍼 ──────────────────────────────────────────────
-_rule_apply_live() {
-  # args: CHAIN ACTION(-A|-D) SPEC...
-  local chain="$1" op="$2"; shift 2
-  iptables "$op" "$chain" "$@"
-}
-
 # ── 대상 입력 헬퍼 ─────────────────────────────────────────
 # 결과: stdout에 iptables 매치 옵션 (e.g. "-s 10.0.0.1" 또는 "-m set --match-set team_x src")
 _rule_prompt_source() {
@@ -64,16 +57,42 @@ _rule_prompt_port() {
   esac
 }
 
+# 설명(comment) 입력 프롬프트. Enter만 치면 빈값.
+_rule_prompt_comment() {
+  local comment
+  read -r -p "설명 (선택, Enter로 건너뛰기): " comment
+  printf '%s' "$comment"
+}
+
+# 문자열 spec + 선택적 comment → iptables argv 배열.
+# 사용: _rule_build_args ARRNAME "<chain>" "$spec" "$comment"
+_rule_build_args() {
+  local -n _out="$1"
+  local chain="$2" spec="$3" comment="$4"
+  _out=()
+  # spec은 공백 포함 토큰이 없으므로 word-split 안전.
+  local tok
+  for tok in $spec; do _out+=("$tok"); done
+  if [[ -n "$comment" ]]; then
+    _out+=(-m comment --comment "$comment")
+  fi
+}
+
 # ── INPUT/DOCKER-USER 허용 or 차단 추가 ────────────────────
 _rule_add_source_based() {
   local chain="$1" jump="$2"  # jump: ACCEPT | DROP | REJECT
-  local src port
+  local src port comment
   src=$(_rule_prompt_source) || { warn "취소됨"; return 0; }
   port=$(_rule_prompt_port) || { warn "취소됨"; return 0; }
+  comment=$(_rule_prompt_comment)
 
   local spec="$src $port -j $jump"
   spec="${spec//  / }"; spec="${spec# }"
-  info "추가할 규칙: iptables -A $chain $spec"
+
+  local -a args
+  _rule_build_args args "$chain" "$spec" "$comment"
+
+  info "추가할 규칙: iptables -A $chain $spec${comment:+ -m comment --comment \"$comment\"}"
   confirm "진행?" Y || return 0
 
   if [[ "$jump" == "DROP" || "$jump" == "REJECT" ]]; then
@@ -81,8 +100,7 @@ _rule_add_source_based() {
   fi
 
   local backup; backup=$(persist_backup "pre-rule-add") || return 1
-  # shellcheck disable=SC2086
-  if ! _rule_apply_live "$chain" -A $spec; then
+  if ! iptables -A "$chain" "${args[@]}"; then
     err "적용 실패"
     persist_rollback_to "$backup"
     return 1
@@ -101,7 +119,7 @@ _rule_add_source_based() {
 
 # ── OUTPUT 차단 전용 ───────────────────────────────────────
 _rule_add_output_block() {
-  local dst port
+  local dst port comment
   dst=$(_rule_prompt_destination) || { warn "취소됨"; return 0; }
   port=$(_rule_prompt_port) || { warn "취소됨"; return 0; }
 
@@ -110,14 +128,19 @@ _rule_add_output_block() {
   (( jidx < 0 )) && return 0
   local jump; case "$jidx" in 0) jump=DROP ;; 1) jump=REJECT ;; esac
 
+  comment=$(_rule_prompt_comment)
+
   local spec="$dst $port -j $jump"
   spec="${spec//  / }"; spec="${spec# }"
-  info "추가할 규칙: iptables -A OUTPUT $spec"
+
+  local -a args
+  _rule_build_args args OUTPUT "$spec" "$comment"
+
+  info "추가할 규칙: iptables -A OUTPUT $spec${comment:+ -m comment --comment \"$comment\"}"
   confirm "진행?" Y || return 0
 
   local backup; backup=$(persist_backup "pre-output-block") || return 1
-  # shellcheck disable=SC2086
-  if ! _rule_apply_live OUTPUT -A $spec; then
+  if ! iptables -A OUTPUT "${args[@]}"; then
     err "적용 실패"
     persist_rollback_to "$backup"
     return 1
@@ -131,6 +154,8 @@ _rule_add_output_block() {
 }
 
 # ── 규칙 삭제 (목록에서 선택) ──────────────────────────────
+# 구현 노트: 규칙에 --comment "..." 가 있으면 spec 문자열을 word-split 해서 넘기면
+# 따옴표가 깨진다. 대신 "체인 내 규칙 번호(1-based)" 로 삭제해서 우회한다.
 _rule_delete_from_chain() {
   local chain="$1"
   local -a rules
@@ -143,14 +168,13 @@ _rule_delete_from_chain() {
   local idx
   idx=$(arrow_menu "$chain — 삭제할 규칙 선택 (q=취소):" "${rules[@]}") || return 0
   (( idx < 0 )) && return 0
-  local spec="${rules[$idx]}"
 
-  info "삭제: iptables -D $chain $spec"
+  local rule_num=$((idx + 1))
+  info "삭제: iptables -D $chain $rule_num  (${rules[$idx]})"
   confirm "진행?" Y || return 0
 
   local backup; backup=$(persist_backup "pre-rule-delete") || return 1
-  # shellcheck disable=SC2086
-  if ! iptables -D "$chain" $spec; then
+  if ! iptables -D "$chain" "$rule_num"; then
     err "삭제 실패"
     persist_rollback_to "$backup"
     return 1
