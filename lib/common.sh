@@ -39,7 +39,7 @@ arrow_menu() {
   local n=${#items[@]} idx=0 key
   [[ $n -eq 0 ]] && return 1
 
-  tput civis 2>/dev/null || true
+  tput civis >&2 2>/dev/null || true
   # 초기 렌더
   printf '%s\n' "$prompt" >&2
   local i
@@ -62,7 +62,7 @@ arrow_menu() {
     elif [[ -z $key ]]; then
       break  # Enter
     elif [[ $key == q ]]; then
-      tput cnorm 2>/dev/null || true
+      tput cnorm >&2 2>/dev/null || true
       echo -1; return 2
     fi
     # 다시 그리기: 위로 n줄 이동 후 재렌더
@@ -76,7 +76,7 @@ arrow_menu() {
       fi
     done
   done
-  tput cnorm 2>/dev/null || true
+  tput cnorm >&2 2>/dev/null || true
   echo "$idx"
 }
 
@@ -91,7 +91,7 @@ checkbox_menu() {
   local -a checked
   for ((i=0; i<n; i++)); do checked[i]=1; done
 
-  tput civis 2>/dev/null || true
+  tput civis >&2 2>/dev/null || true
   printf '%s (스페이스=토글, 엔터=확정, q=취소)\n' "$prompt" >&2
   for ((i=0; i<n; i++)); do
     local mark; [[ ${checked[i]} -eq 1 ]] && mark='[x]' || mark='[ ]'
@@ -115,7 +115,7 @@ checkbox_menu() {
     elif [[ -z $key ]]; then
       break
     elif [[ $key == q ]]; then
-      tput cnorm 2>/dev/null || true
+      tput cnorm >&2 2>/dev/null || true
       return 2
     fi
     printf '\033[%dA' "$n" >&2
@@ -129,7 +129,7 @@ checkbox_menu() {
       fi
     done
   done
-  tput cnorm 2>/dev/null || true
+  tput cnorm >&2 2>/dev/null || true
 
   local out=""
   for ((i=0; i<n; i++)); do

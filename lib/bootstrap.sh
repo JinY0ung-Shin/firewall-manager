@@ -18,7 +18,7 @@ bootstrap_run() {
   # iptables 상태 요약
   local input_count docker_count output_count
   input_count=$(iptables -S INPUT 2>/dev/null | grep -c '^-A ' || true)
-  docker_count=$(iptables -S DOCKER-USER 2>/dev/null | grep -c '^-A ' || echo 0)
+  docker_count=$(iptables -S DOCKER-USER 2>/dev/null | grep -c '^-A ' || true)
   output_count=$(iptables -S OUTPUT 2>/dev/null | grep -c '^-A ' || true)
 
   info "  INPUT 규칙:        ${input_count}개"
@@ -27,7 +27,7 @@ bootstrap_run() {
 
   # OUTPUT ACCEPT/기타 경고
   local output_accept
-  output_accept=$(iptables -S OUTPUT 2>/dev/null | grep -c 'j ACCEPT' || echo 0)
+  output_accept=$(iptables -S OUTPUT 2>/dev/null | grep -c 'j ACCEPT' || true)
   if (( output_accept > 0 )); then
     warn "  OUTPUT에 ACCEPT 규칙 ${output_accept}개가 있습니다."
     warn "  이 규칙들은 도구가 '읽기 전용'으로 보존합니다 (메뉴에서 삭제만 가능)."
