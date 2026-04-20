@@ -3,6 +3,10 @@
 
 set -u
 
+# 메뉴에서 tput civis로 커서를 숨긴 뒤 Ctrl+C 등으로 비정상 종료되면
+# 터미널이 커서 숨김 상태로 남는다. 어떤 경로로 종료되든 복원되도록 전역 trap.
+trap 'tput cnorm 2>/dev/null || true' EXIT
+
 FW_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FW_CONFIG_DIR="${FW_CONFIG_DIR:-$FW_ROOT/config}"
 
