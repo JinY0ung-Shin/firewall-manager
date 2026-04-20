@@ -1,120 +1,37 @@
 #!/usr/bin/env bash
-# status.sh - 상태 대시보드 모듈
-# 의존: common.sh (로깅, 색상, CONFIG_DIR, VERSION, IPTABLES_BACKEND)
-#       validators.sh (check_established_exists)
+# lib/status.sh — 현재 상태 요약 출력
 
-# ── 상태 대시보드 ───────────────────────────────────
-
-show_status() {
-    local line_top="═══════════════════════════════════════════"
-    local line_mid="───────────────────────────────────────────"
-
-    # ── 배너 ──
-    echo ""
-    echo -e "${BOLD}${line_top}${RESET}"
-    echo -e "${BOLD}  Firewall Manager 상태${RESET}"
-    echo -e "${BOLD}${line_top}${RESET}"
-
-    # ── iptables ──
-    local ipt_version
-    ipt_version=$(iptables --version 2>/dev/null | grep -oP 'v[\d.]+' || true)
-    if [[ -n "$ipt_version" ]]; then
-        local backend_label
-        if [[ "$IPTABLES_BACKEND" == "nft" ]]; then
-            backend_label="nft 백엔드"
-        else
-            backend_label="legacy 백엔드"
-        fi
-        echo -e "  iptables:        ${GREEN}✓${RESET} 활성 (${ipt_version}, ${backend_label})"
+status_show() {
+  info "${C_BLD}=== 현재 방화벽 상태 ===${C_RST}"
+  info ""
+  local chain
+  for chain in INPUT DOCKER-USER OUTPUT; do
+    if iptables -S "$chain" >/dev/null 2>&1; then
+      local policy
+      policy=$(iptables -S "$chain" 2>/dev/null | awk 'NR==1 {print $3}')
+      local n
+      n=$(iptables -S "$chain" 2>/dev/null | grep -c '^-A ')
+      printf '%s[%s]%s policy=%s, rules=%d\n' "$C_BLD" "$chain" "$C_RST" "$policy" "$n" >&2
+      iptables -S "$chain" 2>/dev/null | grep '^-A ' | sed 's/^/    /' >&2
+      info ""
     else
-        echo -e "  iptables:        ${RED}✗${RESET} 미설치"
+      dim "[$chain] (체인 없음)"
     fi
+  done
 
-    # ── ipset ──
-    local ipset_version
-    ipset_version=$(ipset version 2>/dev/null | grep -oP 'v[\d.]+' || true)
-    if [[ -n "$ipset_version" ]]; then
-        echo -e "  ipset:           ${GREEN}✓${RESET} 설치됨 (${ipset_version})"
-    else
-        echo -e "  ipset:           ${RED}✗${RESET} 미설치"
-    fi
+  info "${C_BLD}=== 관리 중인 팀(ipset) ===${C_RST}"
+  team_show_summary
+  info ""
 
-    # ── 저장된 규칙 ──
-    local rules_file="${CONFIG_DIR}/iptables.rules"
-    if [[ -f "$rules_file" ]]; then
-        local rules_date
-        rules_date=$(date -r "$rules_file" "+%Y-%m-%d %H:%M" 2>/dev/null || stat -c '%y' "$rules_file" 2>/dev/null | cut -d. -f1)
-        echo -e "  저장된 규칙:      ${GREEN}✓${RESET} ${CONFIG_DIR}/ (${rules_date})"
-    else
-        echo -e "  저장된 규칙:      ${YELLOW}!${RESET} 저장된 규칙 없음"
-    fi
-
-    # ── 체인 요약 ──
-    echo -e "${DIM}${line_mid}${RESET}"
-    echo -e "  ${BOLD}체인:${RESET}"
-
-    # INPUT 체인
-    local input_count
-    input_count=$(iptables -S INPUT 2>/dev/null | grep -cv '^-P' || echo 0)
-    local estab_mark
-    if check_established_exists; then
-        estab_mark="${GREEN}✓${RESET}"
-    else
-        estab_mark="${YELLOW}⚠${RESET}"
-    fi
-    printf "    %-16s %s개 규칙  (ESTABLISHED,RELATED %b)\n" "INPUT" "${input_count}" "${estab_mark}"
-
-    # DOCKER-USER 체인
-    if iptables -S DOCKER-USER &>/dev/null; then
-        local docker_count
-        docker_count=$(iptables -S DOCKER-USER 2>/dev/null | grep -cv '^-P\|^-N' || echo 0)
-        printf "    %-16s %s개 규칙\n" "DOCKER-USER" "${docker_count}"
-    else
-        echo -e "    DOCKER-USER      ${DIM}Docker 미설치/미실행${RESET}"
-    fi
-
-    # ── 팀 요약 ──
-    local team_dir="${CONFIG_DIR}/teams"
-    local team_files=()
-
-    if [[ -d "$team_dir" ]]; then
-        while IFS= read -r -d '' f; do
-            team_files+=("$f")
-        done < <(find "$team_dir" -maxdepth 1 -name '*.conf' -print0 2>/dev/null | sort -z)
-    fi
-
-    if [[ ${#team_files[@]} -gt 0 ]]; then
-        echo -e "${DIM}${line_mid}${RESET}"
-        printf "  ${BOLD}%-21s %s${RESET}\n" "팀:" "ipset 동기화"
-
-        for conf_file in "${team_files[@]}"; do
-            local team_name
-            team_name=$(basename "$conf_file" .conf)
-
-            # conf 파일에서 IP 목록 추출 (주석/빈줄 제외, 파이프 앞부분만)
-            local conf_ips conf_count
-            conf_ips=$(grep -E '^[0-9]' "$conf_file" 2>/dev/null | cut -d'|' -f1 | sort)
-            conf_count=$(echo "$conf_ips" | grep -c . 2>/dev/null || echo 0)
-
-            # ipset 라이브 IP 목록 추출
-            local live_ips live_count
-            live_ips=$(ipset list "$team_name" 2>/dev/null | grep -E '^[0-9]' | awk '{print $1}' | sort)
-            live_count=$(echo "$live_ips" | grep -c . 2>/dev/null || echo 0)
-
-            # 내용 비교 (count가 아닌 실제 IP 목록)
-            local sync_mark
-            if [[ "$conf_ips" == "$live_ips" ]]; then
-                sync_mark="${GREEN}✓ 일치${RESET}"
-            else
-                sync_mark="${YELLOW}⚠ 불일치${RESET}"
-            fi
-
-            printf "    %-17s %3s명       %b\n" "$team_name" "$conf_count" "$sync_mark"
-        done
-    fi
-
-    # ── 범위 안내 ──
-    echo -e "${BOLD}${line_top}${RESET}"
-    echo -e "  ${BLUE}i${RESET}  이 도구는 INPUT/DOCKER-USER 체인만 관리합니다."
-    echo ""
+  info "${C_BLD}=== 최근 백업 ===${C_RST}"
+  local -a paths
+  mapfile -t paths < <(ls -1t "$FW_BACKUP_DIR"/*.tar.gz 2>/dev/null | head -5)
+  if [[ ${#paths[@]} -eq 0 ]]; then
+    dim "  (없음)"
+  else
+    local p
+    for p in "${paths[@]}"; do
+      printf '  %s\n' "$(basename "$p" .tar.gz)" >&2
+    done
+  fi
 }
