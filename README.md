@@ -29,14 +29,58 @@ sudo apt install iptables ipset
 
 ## 사용 방식
 
-레포 디렉터리에서 직접 실행하는 것을 기준으로 합니다. 시스템 경로에 설치하지 않고, `git pull` 후 같은 폴더에서 `./fw`를 실행하면 됩니다.
+두 가지 중 하나를 고르면 됩니다.
+
+### A) 시스템 설치 (공용 서버용 · 추천)
+
+```bash
+git clone https://github.com/JinY0ung-Shin/firewall-manager.git
+cd firewall-manager
+sudo ./install.sh
+```
+
+`install.sh` 가 자동으로 해주는 일:
+- 레포를 `/opt/firewall-manager/` 로 복사
+- 데이터/백업 디렉토리 `/var/lib/fw-manager/` 생성 (권한 `0700 root:root`)
+- `/usr/local/bin/fw` 래퍼 생성 → 어디에서든 `sudo fw` 로 실행 가능
+- 기존 `./config/` 데이터가 있으면 `/var/lib/fw-manager/` 로 자동 마이그레이션
+
+설치 후:
+
+```bash
+sudo fw              # 대화형 메뉴
+sudo fw status       # 상태
+sudo fw rollback     # 백업 목록
+```
+
+업데이트:
+
+```bash
+sudo git -C /opt/firewall-manager pull
+```
+
+제거:
+
+```bash
+sudo /opt/firewall-manager/uninstall.sh
+```
+
+**여러 관리자 공동 사용 시 이 방법을 추천.** 모든 변경과 백업이 `/var/lib/fw-manager/` 한 곳에 쌓이고 `/var/lock/fw-manager.lock` 으로 동시 실행이 직렬화됩니다.
+
+### B) 레포 로컬 실행 (개인용)
+
+설치 없이 클론한 디렉토리에서 바로 돌리는 방식.
 
 ```bash
 git pull
 sudo ./fw
 ```
 
-설정 파일은 레포 안의 `./config/` 를 사용합니다. 첫 실행 시 현재 서버의 `INPUT` / `DOCKER-USER` / `OUTPUT` 상태와 기존 `ipset` 목록을 스캔해서 관리 대상을 고르게 합니다. **live 상태는 첫 실행에서 변경하지 않습니다.**
+설정/백업은 레포 안의 `./config/` 에 저장됩니다. 홈 디렉토리에 두면 해당 사용자 계정 의존성이 생기니, 여러 관리자가 쓰는 서버라면 A를 쓰세요.
+
+---
+
+첫 실행 시 현재 서버의 `INPUT` / `DOCKER-USER` / `OUTPUT` 상태와 기존 `ipset` 목록을 스캔해서 관리 대상을 고르게 합니다. **live 상태는 첫 실행에서 변경하지 않습니다.**
 
 ## 사용법
 
@@ -110,28 +154,40 @@ sudo ./fw --help          # 도움말
 ## 디렉토리 구조
 
 ```
-firewall-manager/
-├── fw                   # 엔트리포인트
-├── SMOKE_TEST.md        # 수동 검증 체크리스트
+firewall-manager/          # (클론한 레포)
+├── fw                     # 엔트리포인트
+├── install.sh             # 시스템 설치 스크립트
+├── uninstall.sh           # 제거 스크립트
+├── SMOKE_TEST.md          # 수동 검증 체크리스트
 ├── examples/
-│   └── fw-restore.service
+│   └── fw-restore.service # 부팅 시 자동 복원용 systemd unit 예시
 ├── lib/
-│   ├── common.sh        # 색상, 로그, 메뉴, flock
-│   ├── scope.sh         # iptables-save/ipset save 필터
-│   ├── persist.sh       # backup/dump/restore/transaction
-│   ├── safety.sh        # SSH 경고, 60초 타이머
-│   ├── bootstrap.sh     # 첫 실행 import
-│   ├── team.sh          # ipset 팀 관리
-│   ├── rule.sh          # iptables 규칙 편집
-│   ├── rollback.sh      # 백업 목록 + 복원
-│   └── status.sh        # 상태 요약
-├── docs/
-│   └── superpowers/     # 재작성 설계/구현 계획
-└── config/              # (자동 생성)
-    ├── iptables.rules   # iptables-save 네이티브 포맷
-    ├── ipsets.rules     # ipset save 네이티브 포맷
-    └── backups/         # 타임스탬프 tar.gz × 최근 20개
+│   ├── common.sh          # 색상, 로그, 메뉴, flock
+│   ├── scope.sh           # iptables-save/ipset save 필터
+│   ├── persist.sh         # backup/dump/restore/transaction
+│   ├── safety.sh          # SSH 경고, 60초 타이머
+│   ├── bootstrap.sh       # 첫 실행 import
+│   ├── team.sh            # ipset 팀 관리
+│   ├── rule.sh            # iptables 규칙 편집
+│   ├── rollback.sh        # 백업 목록 + 복원
+│   └── status.sh          # 상태 요약
+└── docs/
+    └── superpowers/       # 재작성 설계/구현 계획
 ```
+
+런타임 위치 (시스템 설치 시):
+
+```
+/opt/firewall-manager/     # 설치된 레포 (A 방식)
+/usr/local/bin/fw          # 래퍼 (어디에서든 'sudo fw')
+/var/lib/fw-manager/       # 데이터/백업 루트
+├── iptables.rules         # iptables-save 네이티브 포맷
+├── ipsets.rules           # ipset save 네이티브 포맷
+└── backups/               # 타임스탬프 tar.gz × 최근 20개
+/var/lock/fw-manager.lock  # 동시 실행 방지
+```
+
+레포 로컬 실행(B 방식) 시에는 `config/` 디렉토리가 레포 안에 생성됩니다.
 
 ## 예시
 
