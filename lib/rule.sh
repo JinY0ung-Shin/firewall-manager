@@ -1,545 +1,185 @@
 #!/usr/bin/env bash
-# rule.sh - iptables 규칙 관리 (interactive 흐름)
+# lib/rule.sh — iptables 규칙 편집 (INPUT, DOCKER-USER, OUTPUT)
 
-# ── 규칙 관리 서브메뉴 ─────────────────────────────
+# ── 내부 헬퍼 ──────────────────────────────────────────────
+_rule_apply_live() {
+  # args: CHAIN ACTION(-A|-D) SPEC...
+  local chain="$1" op="$2"; shift 2
+  iptables "$op" "$chain" "$@"
+}
+
+# ── 대상 입력 헬퍼 ─────────────────────────────────────────
+# 결과: stdout에 iptables 매치 옵션 (e.g. "-s 10.0.0.1" 또는 "-m set --match-set team_x src")
+_rule_prompt_source() {
+  local idx
+  idx=$(arrow_menu "소스 종류 선택:" "단일 IP" "CIDR" "팀(ipset)" "전체") || return 1
+  (( idx < 0 )) && return 1
+  case "$idx" in
+    0|1)
+      local ip; read -r -p "IP${idx:+/CIDR}: " ip
+      [[ -z "$ip" ]] && return 1
+      printf -- '-s %s' "$ip"
+      ;;
+    2)
+      local -a teams
+      mapfile -t teams < <(team_list_names)
+      [[ ${#teams[@]} -eq 0 ]] && { err "팀 없음"; return 1; }
+      local tidx; tidx=$(arrow_menu "팀 선택:" "${teams[@]}") || return 1
+      (( tidx < 0 )) && return 1
+      printf -- '-m set --match-set %s src' "${teams[$tidx]}"
+      ;;
+    3) printf -- '' ;;
+  esac
+}
+
+_rule_prompt_destination() {
+  local idx
+  idx=$(arrow_menu "대상 종류 선택:" "단일 IP" "CIDR" "팀(ipset)") || return 1
+  (( idx < 0 )) && return 1
+  case "$idx" in
+    0|1)
+      local ip; read -r -p "IP${idx:+/CIDR}: " ip
+      [[ -z "$ip" ]] && return 1
+      printf -- '-d %s' "$ip"
+      ;;
+    2)
+      local -a teams
+      mapfile -t teams < <(team_list_names)
+      [[ ${#teams[@]} -eq 0 ]] && { err "팀 없음"; return 1; }
+      local tidx; tidx=$(arrow_menu "팀 선택:" "${teams[@]}") || return 1
+      (( tidx < 0 )) && return 1
+      printf -- '-m set --match-set %s dst' "${teams[$tidx]}"
+      ;;
+  esac
+}
+
+_rule_prompt_port() {
+  local idx
+  idx=$(arrow_menu "포트 제한:" "모든 포트" "특정 TCP 포트" "특정 UDP 포트") || return 1
+  (( idx < 0 )) && return 1
+  case "$idx" in
+    0) printf -- '' ;;
+    1) local p; read -r -p "TCP 포트: " p; [[ -n "$p" ]] && printf -- '-p tcp --dport %s' "$p" ;;
+    2) local p; read -r -p "UDP 포트: " p; [[ -n "$p" ]] && printf -- '-p udp --dport %s' "$p" ;;
+  esac
+}
+
+# ── INPUT/DOCKER-USER 허용 or 차단 추가 ────────────────────
+_rule_add_source_based() {
+  local chain="$1" jump="$2"  # jump: ACCEPT | DROP | REJECT
+  local src port
+  src=$(_rule_prompt_source) || { warn "취소됨"; return 0; }
+  port=$(_rule_prompt_port) || { warn "취소됨"; return 0; }
+
+  local spec="$src $port -j $jump"
+  spec="${spec//  / }"; spec="${spec# }"
+  info "추가할 규칙: iptables -A $chain $spec"
+  confirm "진행?" Y || return 0
+
+  if [[ "$jump" == "DROP" || "$jump" == "REJECT" ]]; then
+    safety_check_ssh_block "$chain $spec" || return 0
+  fi
+
+  local backup; backup=$(persist_backup "pre-rule-add") || return 1
+  # shellcheck disable=SC2086
+  if ! _rule_apply_live "$chain" -A $spec; then
+    err "적용 실패"
+    persist_rollback_to "$backup"
+    return 1
+  fi
+  persist_dump_live_to_config
+
+  if [[ "$jump" == "DROP" || "$jump" == "REJECT" ]]; then
+    safety_arm_confirm_timer "$backup" || return 1
+  fi
+  ok "규칙 추가 완료"
+}
+
+# ── OUTPUT 차단 전용 ───────────────────────────────────────
+_rule_add_output_block() {
+  local dst port
+  dst=$(_rule_prompt_destination) || { warn "취소됨"; return 0; }
+  port=$(_rule_prompt_port) || { warn "취소됨"; return 0; }
+
+  local jidx
+  jidx=$(arrow_menu "동작:" "DROP (조용히 버림)" "REJECT (거절 응답)") || return 0
+  (( jidx < 0 )) && return 0
+  local jump; case "$jidx" in 0) jump=DROP ;; 1) jump=REJECT ;; esac
+
+  local spec="$dst $port -j $jump"
+  spec="${spec//  / }"; spec="${spec# }"
+  info "추가할 규칙: iptables -A OUTPUT $spec"
+  confirm "진행?" Y || return 0
+
+  local backup; backup=$(persist_backup "pre-output-block") || return 1
+  # shellcheck disable=SC2086
+  if ! _rule_apply_live OUTPUT -A $spec; then
+    err "적용 실패"
+    persist_rollback_to "$backup"
+    return 1
+  fi
+  persist_dump_live_to_config
+  ok "OUTPUT 차단 규칙 추가 완료"
+}
+
+# ── 규칙 삭제 (목록에서 선택) ──────────────────────────────
+_rule_delete_from_chain() {
+  local chain="$1"
+  local -a rules
+  mapfile -t rules < <(iptables -S "$chain" 2>/dev/null | grep '^-A ' | sed "s/^-A $chain //")
+  if [[ ${#rules[@]} -eq 0 ]]; then
+    warn "$chain 에 삭제할 규칙 없음"
+    return 0
+  fi
+
+  local idx
+  idx=$(arrow_menu "$chain — 삭제할 규칙 선택 (q=취소):" "${rules[@]}") || return 0
+  (( idx < 0 )) && return 0
+  local spec="${rules[$idx]}"
+
+  info "삭제: iptables -D $chain $spec"
+  confirm "진행?" Y || return 0
+
+  local backup; backup=$(persist_backup "pre-rule-delete") || return 1
+  # shellcheck disable=SC2086
+  if ! iptables -D "$chain" $spec; then
+    err "삭제 실패"
+    persist_rollback_to "$backup"
+    return 1
+  fi
+  persist_dump_live_to_config
+  ok "규칙 삭제 완료"
+}
+
+# ── 메뉴 ───────────────────────────────────────────────────
 rule_menu() {
-    while true; do
-        menu_select "규칙 관리" \
-            "규칙 목록 보기" \
-            "규칙 추가" \
-            "규칙 삭제"
-        local choice=$?
-
-        case $choice in
-            1) rule_list ;;
-            2) rule_add ;;
-            3) rule_remove ;;
-            0) return ;;
-        esac
-    done
-}
-
-# ── 규칙 파싱 (공통) ───────────────────────────────
-# iptables -S 출력을 파싱하여 테이블 행 배열에 채운다.
-# 인자: chain
-# 출력: _parsed_rows 배열 (전역), _parsed_raw 배열 (전역, 원본 줄)
-_parse_rules() {
-    local chain="$1"
-    _parsed_rows=()
-    _parsed_raw=()
-
-    local line_num=0
-    while IFS= read -r line; do
-        # -P (정책) 및 -N (체인 정의) 라인 스킵
-        [[ "$line" == -P* ]] && continue
-        [[ "$line" == -N* ]] && continue
-        line_num=$((line_num + 1))
-
-        local action="" proto="all" source="0.0.0.0/0" port="all" comment=""
-
-        # 액션 추출
-        if [[ "$line" =~ -j\ ([A-Z]+) ]]; then
-            action="${BASH_REMATCH[1]}"
-        fi
-
-        # 프로토콜 추출
-        if [[ "$line" =~ -p\ ([a-z]+) ]]; then
-            proto="${BASH_REMATCH[1]}"
-        fi
-
-        # 소스 추출
-        if [[ "$line" =~ -s\ ([0-9./]+) ]]; then
-            source="${BASH_REMATCH[1]}"
-        elif [[ "$line" =~ --match-set\ ([^ ]+)\ src ]]; then
-            source="team:${BASH_REMATCH[1]}"
-        fi
-
-        # 포트 추출
-        if [[ "$line" =~ --dport\ ([0-9]+) ]]; then
-            port="${BASH_REMATCH[1]}"
-        fi
-
-        # comment 추출
-        if [[ "$line" =~ --comment\ \"([^\"]+)\" ]]; then
-            comment="${BASH_REMATCH[1]}"
-        elif [[ "$line" =~ --comment\ ([^ ]+) ]]; then
-            comment="${BASH_REMATCH[1]}"
-        fi
-
-        _parsed_rows+=("${line_num}|${action}|${proto}|${source}|${port}|${comment}")
-        _parsed_raw+=("$line")
-    done <<< "$(iptables -S "$chain" 2>/dev/null)"
-}
-
-_get_selectable_teams() {
-    local -n _teams_ref=$1
-    _teams_ref=()
-
-    local -a live_sets=()
-    local setname=""
-    while IFS= read -r line; do
-        if [[ "$line" == "Name: "* ]]; then
-            setname="${line#Name: }"
-        elif [[ "$line" == "Type: "* && -n "$setname" ]]; then
-            if is_supported_ipset_type "${line#Type: }"; then
-                live_sets+=("$setname")
-            fi
-            setname=""
-        fi
-    done <<< "$(ipset list -t 2>/dev/null)"
-
-    local conf
-    for conf in "${CONFIG_DIR}/teams/"*.conf; do
-        [[ -e "$conf" ]] || continue
-
-        local team_name
-        team_name="$(basename "$conf" .conf)"
-
-        local live_name
-        for live_name in "${live_sets[@]}"; do
-            if [[ "$live_name" == "$team_name" ]]; then
-                _teams_ref+=("$team_name")
-                break
-            fi
-        done
-    done
-}
-
-# ── 규칙 목록 보기 ─────────────────────────────────
-rule_list() {
-    print_header "규칙 목록 보기"
-
-    # 체인 선택
-    prompt_choice "체인 선택" "INPUT" "DOCKER-USER"
-    local chain_choice=$?
-    if [[ $chain_choice -eq 0 ]]; then return; fi
-    local chain
-    case $chain_choice in
-        1) chain="INPUT" ;;
-        2) chain="DOCKER-USER" ;;
+  while true; do
+    clear
+    info "${C_BLD}=== 규칙 관리 ===${C_RST}"
+    info ""
+    local idx
+    idx=$(arrow_menu "작업 선택 (q=뒤로):" \
+      "INPUT 허용 추가" \
+      "INPUT 차단 추가" \
+      "DOCKER-USER 허용 추가" \
+      "DOCKER-USER 차단 추가" \
+      "OUTPUT 차단 추가" \
+      "INPUT 규칙 삭제" \
+      "DOCKER-USER 규칙 삭제" \
+      "OUTPUT 규칙 삭제" \
+      "뒤로") || return 0
+    (( idx < 0 )) && return 0
+    case "$idx" in
+      0) _rule_add_source_based INPUT       ACCEPT ;;
+      1) _rule_add_source_based INPUT       DROP   ;;
+      2) _rule_add_source_based DOCKER-USER ACCEPT ;;
+      3) _rule_add_source_based DOCKER-USER DROP   ;;
+      4) _rule_add_output_block ;;
+      5) _rule_delete_from_chain INPUT ;;
+      6) _rule_delete_from_chain DOCKER-USER ;;
+      7) _rule_delete_from_chain OUTPUT ;;
+      8) return 0 ;;
     esac
-
-    # DOCKER-USER 체인 존재 확인
-    if [[ "$chain" == "DOCKER-USER" ]]; then
-        if ! iptables -nL DOCKER-USER &>/dev/null; then
-            warn "DOCKER-USER 체인이 존재하지 않습니다."
-            info "Docker가 설치되어 실행 중이어야 DOCKER-USER 체인이 생성됩니다."
-            return
-        fi
-    fi
-
-    # 규칙 파싱
-    _parse_rules "$chain"
-
-    if [[ ${#_parsed_rows[@]} -eq 0 ]]; then
-        info "${chain} 체인에 규칙이 없습니다."
-        return
-    fi
-
-    # 테이블 출력
-    print_table "#|Action|Proto|Source|Port|Comment" "${_parsed_rows[@]}"
     pause
-}
-
-# ── 규칙 추가 (Step-by-step Wizard) ───────────────
-rule_add() {
-    print_header "규칙 추가"
-
-    # Step 1: 체인 선택
-    prompt_choice "체인 선택" "INPUT" "DOCKER-USER"
-    local chain_choice=$?
-    if [[ $chain_choice -eq 0 ]]; then return; fi
-    local chain
-    case $chain_choice in
-        1) chain="INPUT" ;;
-        2) chain="DOCKER-USER" ;;
-    esac
-
-    # DOCKER-USER 체인 존재 확인
-    if [[ "$chain" == "DOCKER-USER" ]]; then
-        if ! iptables -nL DOCKER-USER &>/dev/null; then
-            warn "DOCKER-USER 체인이 존재하지 않습니다."
-            info "Docker가 설치되어 실행 중이어야 DOCKER-USER 체인이 생성됩니다."
-            return
-        fi
-    fi
-
-    echo ""
-
-    # Step 2: 액션 선택
-    prompt_choice "액션 선택" "ACCEPT (허용)" "DROP (차단)" "REJECT (거부)"
-    local action_choice=$?
-    if [[ $action_choice -eq 0 ]]; then return; fi
-    local action
-    case $action_choice in
-        1) action="ACCEPT" ;;
-        2) action="DROP" ;;
-        3) action="REJECT" ;;
-    esac
-
-    echo ""
-
-    # Step 3: 소스 지정
-    local source=""
-    local source_type=""
-    local source_display=""
-    local team_name=""
-
-    prompt_choice "소스 지정" "IP 주소 직접 입력" "팀(ipset)에서 선택" "모든 소스 (0.0.0.0/0)"
-    local src_choice=$?
-    if [[ $src_choice -eq 0 ]]; then return 0; fi
-
-    case $src_choice in
-        1)
-            source_type="ip"
-            if ! read_valid_ip "IP 주소 (CIDR 가능, 빈 입력=취소)"; then
-                return 0
-            fi
-            source="$REPLY"
-            source_display="$source"
-            ;;
-        2)
-            source_type="team"
-            # 저장/복원 가능한 관리 팀만 표시
-            local ipsets=()
-            _get_selectable_teams ipsets
-
-            if [[ ${#ipsets[@]} -eq 0 ]]; then
-                warn "선택할 수 있는 관리 팀(ipset)이 없습니다."
-                info "팀 관리 메뉴에서 팀을 만들거나, 저장된 팀을 먼저 불러오세요."
-                info "IP 주소를 직접 입력합니다."
-                source_type="ip"
-                if ! read_valid_ip "IP 주소 (CIDR 가능, 빈 입력=취소)"; then
-                    return 0
-                fi
-                source="$REPLY"
-                source_display="$source"
-            else
-                echo ""
-                prompt_choice "팀 선택" "${ipsets[@]}"
-                local team_choice=$?
-                if [[ $team_choice -eq 0 ]]; then return 0; fi
-                team_name="${ipsets[$((team_choice - 1))]}"
-                source="$team_name"
-                source_display="team:${team_name}"
-            fi
-            ;;
-        3)
-            source_type="all"
-            source="0.0.0.0/0"
-            source_display="0.0.0.0/0 (모든 소스)"
-            ;;
-    esac
-
-    echo ""
-
-    # Step 4: 포트 번호
-    if ! read_valid_port "포트 번호 (전체는 'all', 빈 입력=취소)"; then
-        return 0
-    fi
-    local port="$REPLY"
-
-    # Step 5: 프로토콜 (포트가 all이 아닐 때만)
-    local proto="all"
-    if [[ "$port" != "all" ]]; then
-        echo ""
-        prompt_choice "프로토콜" "tcp" "udp" "all"
-        local proto_choice=$?
-        if [[ $proto_choice -eq 0 ]]; then return 0; fi
-        case $proto_choice in
-            1) proto="tcp" ;;
-            2) proto="udp" ;;
-            3) proto="all" ;;
-        esac
-
-        # 포트가 지정되었는데 프로토콜이 all이면 tcp로 자동 설정
-        if [[ "$proto" == "all" ]]; then
-            proto="tcp"
-            echo ""
-            info "포트가 지정된 경우 프로토콜이 필요합니다. tcp로 자동 설정합니다."
-        fi
-    fi
-
-    echo ""
-
-    # Step 6: 설명 (선택사항)
-    prompt_input_optional "설명 (선택사항)"
-    local comment="$REPLY"
-    # comment 내의 위험 문자 제거 (셸 인젝션 방지)
-    comment="${comment//\"/}"
-    comment="${comment//\$/}"
-    comment="${comment//\`/}"
-    comment="${comment//\\/}"
-    comment="${comment//|/}"
-
-    local dup_src="$source"
-    [[ "$source_type" == "team" ]] && dup_src="team:${source}"
-    [[ "$source_type" == "all" ]] && dup_src="0.0.0.0/0"
-
-    local pre_match_count
-    pre_match_count=$(count_matching_rules "$chain" "$dup_src" "$port" "$proto" "$action" "$comment")
-
-    # ── iptables 명령어 구성 (배열 기반, eval 사용하지 않음) ──
-    local -a cmd_args=(iptables -A "$chain")
-
-    # 소스
-    if [[ "$source_type" == "ip" ]]; then
-        cmd_args+=(-s "$source")
-    elif [[ "$source_type" == "team" ]]; then
-        cmd_args+=(-m set --match-set "$source" src)
-    fi
-    # source_type == "all"이면 -s 생략 (모든 소스)
-
-    # 프로토콜
-    if [[ "$proto" != "all" ]]; then
-        cmd_args+=(-p "$proto")
-    fi
-
-    # 포트
-    if [[ "$port" != "all" ]]; then
-        cmd_args+=(--dport "$port")
-    fi
-
-    # comment
-    if [[ -n "$comment" ]]; then
-        cmd_args+=(-m comment --comment "$comment")
-    fi
-
-    # 액션
-    cmd_args+=(-j "$action")
-
-    # 미리보기용 문자열 (표시용)
-    local cmd_display="iptables -A ${chain}"
-    [[ "$source_type" == "ip" ]] && cmd_display+=" -s ${source}"
-    [[ "$source_type" == "team" ]] && cmd_display+=" -m set --match-set ${source} src"
-    [[ "$proto" != "all" ]] && cmd_display+=" -p ${proto}"
-    [[ "$port" != "all" ]] && cmd_display+=" --dport ${port}"
-    [[ -n "$comment" ]] && cmd_display+=" -m comment --comment \"${comment}\""
-    cmd_display+=" -j ${action}"
-
-    # ── 요약 표시 ────────────────────────────────
-    print_header "확인"
-    echo -e "  체인:     ${BOLD}${chain}${RESET}"
-    echo -e "  액션:     ${BOLD}${action}${RESET}"
-    echo -e "  소스:     ${BOLD}${source_display}${RESET}"
-    echo -e "  포트:     ${BOLD}${port}${RESET}"
-    echo -e "  프로토콜: ${BOLD}${proto}${RESET}"
-    if [[ -n "$comment" ]]; then
-        echo -e "  설명:     ${BOLD}${comment}${RESET}"
-    fi
-
-    preview_cmd "$cmd_display"
-
-    # ── 중복 규칙 검사 ───────────────────────────
-    local dup_num
-    if dup_num=$(check_duplicate_rule "$chain" "$dup_src" "$port" "$proto" "$action" "$comment"); then
-        warn "동일한 규칙이 이미 존재합니다 (#${dup_num}번)"
-        if ! prompt_confirm "그래도 추가하시겠습니까?"; then
-            info "취소되었습니다."
-            return
-        fi
-    fi
-
-    # ── SSH 충돌 검사 ────────────────────────────
-    if [[ "$action" == "DROP" || "$action" == "REJECT" ]]; then
-        local ssh_src="$source"
-        [[ "$source_type" == "all" ]] && ssh_src="0.0.0.0/0"
-        [[ "$source_type" == "team" ]] && ssh_src="team:${source}"
-
-        if detect_ssh_conflict_add "$chain" "$action" "$ssh_src" "$port" "$proto"; then
-            echo ""
-            echo -e "  ${RED}${BOLD}경고: 이 규칙은 SSH 접속(포트 ${SSH_CLIENT_PORT})을 차단할 수 있습니다!${RESET}"
-            if [[ -n "$SSH_CLIENT_IP" ]]; then
-                echo -e "  현재 접속 중인 IP: ${BOLD}${SSH_CLIENT_IP}${RESET}"
-            fi
-            echo -e "  이 규칙을 적용하면 서버에 접속할 수 없게 될 수 있습니다."
-
-            if ! prompt_confirm_critical "SSH 접속이 차단될 수 있는 규칙입니다."; then
-                info "취소되었습니다."
-                return
-            fi
-        fi
-    fi
-
-    # ── ESTABLISHED,RELATED 규칙 존재 확인 ───────
-    if [[ "$chain" == "INPUT" ]]; then
-        if ! check_established_exists; then
-            echo ""
-            warn "INPUT 체인에 ESTABLISHED,RELATED 허용 규칙이 없습니다!"
-            info "기존 연결이 끊어질 수 있습니다."
-
-            if prompt_confirm "기본 보호 규칙을 먼저 추가하시겠습니까?"; then
-                local est_cmd="iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
-                preview_cmd "$est_cmd"
-                if iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT; then
-                    success "기본 보호 규칙(ESTABLISHED,RELATED)이 추가되었습니다."
-                else
-                    error "기본 보호 규칙 추가에 실패했습니다."
-                fi
-            fi
-        fi
-    fi
-
-    # ── 최종 확인 및 실행 ────────────────────────
-    if ! prompt_confirm "이 규칙을 추가하시겠습니까?"; then
-        info "취소되었습니다."
-        return
-    fi
-
-    if "${cmd_args[@]}"; then
-        success "규칙이 추가되었습니다."
-
-        # DROP/REJECT 규칙: 60초 안전 타이머 롤백
-        if [[ "$action" == "DROP" || "$action" == "REJECT" ]]; then
-            local target_occurrence=$((pre_match_count + 1))
-            _safety_timer_rollback "$chain" "$dup_src" "$port" "$proto" "$action" "$comment" "$target_occurrence"
-        else
-            echo ""
-            info "저장하려면 메인 메뉴 → '저장 / 불러오기'를 이용하세요."
-            pause
-        fi
-    else
-        error "규칙 추가에 실패했습니다."
-        pause
-    fi
-}
-
-# ── 안전 타이머 롤백 ───────────────────────────────
-# DROP/REJECT 규칙 추가 후 60초 이내에 확인하지 않으면 자동 제거
-_safety_timer_rollback() {
-    local chain="$1"
-    local src="$2"
-    local port="$3"
-    local proto="$4"
-    local action="$5"
-    local comment="$6"
-    local occurrence="$7"
-
-    echo ""
-    warn "안전 확인: 60초 이내에 Enter를 누르면 규칙이 유지됩니다."
-    info "시간 내에 응답하지 않으면 자동으로 규칙이 제거됩니다..."
-    echo ""
-
-    # 백그라운드 롤백 프로세스 시작
-    (
-        sleep 60
-        local line_num
-        if line_num=$(find_matching_rule_line "$chain" "$src" "$port" "$proto" "$action" "$occurrence" "$comment"); then
-            iptables -D "$chain" "$line_num" 2>/dev/null
-        fi
-    ) &
-    local rollback_pid=$!
-
-    # 사용자 입력 대기 (60초 타임아웃)
-    local confirmed=false
-    if read -rt 60 -p "  [확인하려면 Enter] " _; then
-        confirmed=true
-    fi
-
-    if $confirmed; then
-        # 사용자가 확인함 -> 롤백 프로세스 종료
-        kill "$rollback_pid" 2>/dev/null
-        wait "$rollback_pid" 2>/dev/null
-        echo ""
-        success "규칙이 확정되었습니다."
-        info "저장하려면 메인 메뉴 → '저장 / 불러오기'를 이용하세요."
-    else
-        # 타임아웃 -> 롤백 프로세스가 자동 제거 처리
-        echo ""
-        warn "60초 초과 - 규칙이 자동으로 제거됩니다."
-        # 롤백 프로세스가 이미 실행 중이므로 완료 대기
-        wait "$rollback_pid" 2>/dev/null
-        info "규칙이 제거되었습니다. (안전 롤백)"
-    fi
-}
-
-# ── 규칙 삭제 ──────────────────────────────────────
-rule_remove() {
-    print_header "규칙 삭제"
-
-    # 체인 선택
-    prompt_choice "체인 선택" "INPUT" "DOCKER-USER"
-    local chain_choice=$?
-    if [[ $chain_choice -eq 0 ]]; then return; fi
-    local chain
-    case $chain_choice in
-        1) chain="INPUT" ;;
-        2) chain="DOCKER-USER" ;;
-    esac
-
-    # DOCKER-USER 체인 존재 확인
-    if [[ "$chain" == "DOCKER-USER" ]]; then
-        if ! iptables -nL DOCKER-USER &>/dev/null; then
-            warn "DOCKER-USER 체인이 존재하지 않습니다."
-            info "Docker가 설치되어 실행 중이어야 DOCKER-USER 체인이 생성됩니다."
-            return
-        fi
-    fi
-
-    # 현재 규칙 표시
-    _parse_rules "$chain"
-
-    if [[ ${#_parsed_rows[@]} -eq 0 ]]; then
-        info "${chain} 체인에 삭제할 규칙이 없습니다."
-        return
-    fi
-
-    # 규칙 선택 - 화살표 메뉴
-    local options=()
-    for row in "${_parsed_rows[@]}"; do
-        # "번호|Action|Proto|Source|Port|Comment" → 표시용 문자열
-        IFS='|' read -ra cols <<< "$row"
-        options+=("#${cols[0]} ${cols[1]} ${cols[3]} :${cols[4]} (${cols[2]}) ${cols[5]}")
-    done
-
-    prompt_choice "삭제할 규칙 선택 (${chain})" "${options[@]}"
-    local rule_num=$?
-    if [[ $rule_num -eq 0 ]]; then
-        return
-    fi
-
-    # 선택된 규칙의 원본 줄 가져오기
-    local raw_rule="${_parsed_raw[$((rule_num - 1))]}"
-
-    # SSH 허용 규칙 삭제 감지
-    if detect_ssh_rule "$raw_rule"; then
-        echo ""
-        echo -e "  ${RED}${BOLD}경고: 이 규칙은 현재 SSH 접속을 허용하고 있습니다!${RESET}"
-        echo -e "  삭제하면 서버에 접속할 수 없게 될 수 있습니다."
-
-        if ! prompt_confirm_critical "SSH 허용 규칙을 삭제하려 합니다."; then
-            info "취소되었습니다."
-            return
-        fi
-    fi
-
-    # ESTABLISHED,RELATED 규칙 삭제 감지
-    if detect_established_rule "$raw_rule"; then
-        echo ""
-        echo -e "  ${RED}${BOLD}경고: 이 규칙은 기존 연결 유지에 필수적입니다!${RESET}"
-        echo -e "  삭제하면 현재 SSH를 포함한 모든 기존 연결이 끊어질 수 있습니다."
-
-        if ! prompt_confirm_critical "ESTABLISHED,RELATED 규칙을 삭제하려 합니다."; then
-            info "취소되었습니다."
-            return
-        fi
-    fi
-
-    # 미리보기 및 확인
-    local del_cmd="iptables -D ${chain} ${rule_num}"
-    preview_cmd "$del_cmd"
-
-    if ! prompt_confirm "이 규칙을 삭제하시겠습니까?"; then
-        info "취소되었습니다."
-        return
-    fi
-
-    # 실행 (eval 사용하지 않음 — 인자가 단순하므로 직접 호출)
-    if iptables -D "$chain" "$rule_num"; then
-        success "규칙이 삭제되었습니다."
-        info "저장하려면 메인 메뉴 → '저장 / 불러오기'를 이용하세요."
-    else
-        error "규칙 삭제에 실패했습니다."
-    fi
-    pause
+  done
 }
