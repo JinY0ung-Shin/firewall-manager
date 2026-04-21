@@ -64,17 +64,38 @@ persist_dump_live_to_config() {
 }
 
 # ── config → live 복원 (순서: ipset 먼저, iptables 나중) ──
+#
+# 중복 방지 주의:
+#   - `iptables-restore --noflush` 는 **테이블 전체** flush 만 막을 뿐 체인별로
+#     flush 해주지는 않음. 그대로 두면 두 번째 restore 부터 규칙이 누적돼 중복.
+#   - `ipset restore -!` 도 create/add 충돌을 무시할 뿐 **기존 엔트리를 제거
+#     하지 않음**. 그대로 두면 파일에 없는 옛 엔트리가 남음.
+# 해결: restore 전에 우리가 관리하는 체인/셋 내용을 명시적으로 비운다.
+# FORWARD/DOCKER/DOCKER-ISOLATION-* 등 관리 범위 밖 체인은 건드리지 않음.
 persist_restore_from_config() {
   [[ -f "$FW_IPSETS_FILE" ]]    || { err "$FW_IPSETS_FILE 없음"; return 1; }
   [[ -f "$FW_IPTABLES_FILE" ]]  || { err "$FW_IPTABLES_FILE 없음"; return 1; }
 
-  # ipset: `restore -!` 는 이미 존재하는 set을 덮어씀
+  # 1) 우리 체인 flush (존재 안 하거나 비어있어도 에러는 무시)
+  local chain
+  for chain in INPUT OUTPUT DOCKER-USER; do
+    iptables -F "$chain" 2>/dev/null || true
+  done
+
+  # 2) 관리 대상 ipset 내용 비우기 (set 정의는 유지)
+  local -a managed
+  mapfile -t managed < <(scope_ipset_names_from_file "$FW_IPSETS_FILE")
+  local set
+  for set in "${managed[@]}"; do
+    [[ -n "$set" ]] && ipset flush "$set" 2>/dev/null || true
+  done
+
+  # 3) ipset 먼저, iptables 나중 (iptables 규칙이 ipset 을 참조하므로)
   if ! ipset restore -! < "$FW_IPSETS_FILE"; then
     err "ipset restore 실패"
     return 1
   fi
 
-  # iptables: --noflush 로 파일에 선언된 체인만 flush
   if ! iptables-restore --noflush < "$FW_IPTABLES_FILE"; then
     err "iptables-restore 실패"
     return 1
