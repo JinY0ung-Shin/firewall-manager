@@ -33,18 +33,20 @@ info "데이터 디렉:  $DATA_DIR"
 info "실행 파일:    $WRAPPER"
 printf '\n' >&2
 
-# 1. 레포를 /opt/ 로 복사
+# 1. 레포를 /opt/ 로 복사 (없으면 새로 설치, 있으면 파일 업데이트 — 재실행 가능)
 if [[ "$SRC_REPO" == "$INSTALL_PREFIX" ]]; then
   info "이미 $INSTALL_PREFIX 에서 실행 중 — 복사 생략"
-elif [[ -e "$INSTALL_PREFIX" ]]; then
-  info "$INSTALL_PREFIX 이미 존재 — 업데이트는 'sudo git -C $INSTALL_PREFIX pull' 사용"
-  info "(이번 설치는 기존 파일을 덮어쓰지 않습니다)"
 else
-  info "$SRC_REPO → $INSTALL_PREFIX 복사 중..."
-  cp -a "$SRC_REPO" "$INSTALL_PREFIX"
-  # /opt/ 아래 소유권을 root 로 정리 (cp -a 가 원 소유자 유지하기 때문)
+  if [[ -e "$INSTALL_PREFIX" ]]; then
+    info "$INSTALL_PREFIX 기존 설치 감지 — 파일 업데이트 중..."
+  else
+    info "$SRC_REPO → $INSTALL_PREFIX 복사 중..."
+    mkdir -p "$INSTALL_PREFIX"
+  fi
+  # 'SRC/.' 문법: 디렉토리 내용물을 기존 디렉토리에 덮어쓰기. 초기/재설치 모두 안전.
+  cp -a "$SRC_REPO/." "$INSTALL_PREFIX/"
   chown -R root:root "$INSTALL_PREFIX"
-  ok "복사 완료"
+  ok "파일 반영 완료"
 fi
 
 # 2. 데이터 디렉토리
