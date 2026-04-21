@@ -153,6 +153,59 @@ _rule_add_output_block() {
   ok "OUTPUT 차단 규칙 추가 완료"
 }
 
+# ── INPUT 기본 정책 변경 (ACCEPT ↔ DROP) ──────────────────
+# 위험도가 높은 작업이라 3단 안전장치: ESTABLISHED 체크 → SSH 허용 체크 → 60초 타이머
+_rule_toggle_input_policy() {
+  local current
+  current=$(iptables -S INPUT 2>/dev/null | awk 'NR==1 {print $3}')
+  [[ -z "$current" ]] && { err "INPUT 체인 조회 실패"; return 1; }
+
+  local target
+  if [[ "$current" == "DROP" ]]; then
+    target="ACCEPT"
+    info "현재: ${C_BLD}DROP${C_RST} (명시적 허용만 통과) → 변경 시: ACCEPT (모든 트래픽 허용, 차단 규칙만 적용)"
+  else
+    target="DROP"
+    info "현재: ${C_BLD}$current${C_RST} (기본 통과) → 변경 시: DROP (명시적으로 허용하지 않은 트래픽 전부 차단)"
+    warn "DROP 전환은 허용 규칙이 충분치 않으면 SSH 접속이 끊기는 등 자기-차단 위험이 있습니다."
+  fi
+  info ""
+
+  confirm "INPUT 기본 정책을 $target 로 바꾸시겠습니까?" N || return 0
+
+  if [[ "$target" == "DROP" ]]; then
+    # (1) ESTABLISHED,RELATED 체크 + 자동 삽입 제안
+    safety_check_established
+
+    # (2) SSH 허용 규칙 체크
+    local port; port=$(safety_ssh_port)
+    if ! iptables -S INPUT 2>/dev/null | grep -qE "dport $port\\b.*-j ACCEPT"; then
+      warn "INPUT에 SSH 포트($port) 허용 규칙이 안 보입니다."
+      warn "이 상태로 DROP 전환하면 현재 SSH 세션은 유지되어도, 다음 새 접속은 차단됩니다."
+      confirm "그래도 진행?" N || return 0
+    fi
+  fi
+
+  local backup; backup=$(persist_backup "pre-policy-change") || return 1
+  if ! iptables -P INPUT "$target"; then
+    err "정책 변경 실패"
+    persist_rollback_to "$backup"
+    return 1
+  fi
+  if ! persist_dump_live_to_config; then
+    err "config 덤프 실패, 백업에서 롤백 중..."
+    persist_rollback_to "$backup"
+    return 1
+  fi
+
+  # (3) DROP 전환인 경우에만 60초 확인 타이머
+  if [[ "$target" == "DROP" ]]; then
+    safety_arm_confirm_timer "$backup" || return 1
+  fi
+
+  ok "INPUT 기본 정책: $target"
+}
+
 # ── 규칙 삭제 (목록에서 선택) ──────────────────────────────
 # 구현 노트: 규칙에 --comment "..." 가 있으면 spec 문자열을 word-split 해서 넘기면
 # 따옴표가 깨진다. 대신 "체인 내 규칙 번호(1-based)" 로 삭제해서 우회한다.
@@ -203,6 +256,7 @@ rule_menu() {
       "INPUT 규칙 삭제" \
       "DOCKER-USER 규칙 삭제" \
       "OUTPUT 규칙 삭제" \
+      "INPUT 기본 정책 변경 (ACCEPT ↔ DROP)" \
       "뒤로") || return 0
     (( idx < 0 )) && return 0
     case "$idx" in
@@ -214,7 +268,8 @@ rule_menu() {
       5) _rule_delete_from_chain INPUT ;;
       6) _rule_delete_from_chain DOCKER-USER ;;
       7) _rule_delete_from_chain OUTPUT ;;
-      8) return 0 ;;
+      8) _rule_toggle_input_policy ;;
+      9) return 0 ;;
     esac
     pause
   done
