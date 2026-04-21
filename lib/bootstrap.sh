@@ -1,5 +1,70 @@
 #!/usr/bin/env bash
-# lib/bootstrap.sh — 첫 실행 import
+# lib/bootstrap.sh — 첫 실행 import + 사후 재스캔
+
+# rescan_run
+#   live에 있지만 config에 등록 안 된 ipset 을 찾아, 관리 대상 추가 제안.
+#   "다른 서버에서 ipset save → scp → ipset restore" 후 이 도구가 해당 set을
+#   관리 대상으로 인식하게 만드는 경로.
+rescan_run() {
+  local -a live_sets
+  mapfile -t live_sets < <(ipset list -n 2>/dev/null || true)
+
+  local -a managed_sets
+  mapfile -t managed_sets < <(scope_ipset_names_from_file "$FW_IPSETS_FILE")
+
+  local -a unmanaged=()
+  local s m found
+  for s in "${live_sets[@]}"; do
+    [[ -z "$s" ]] && continue
+    found=0
+    for m in "${managed_sets[@]}"; do
+      [[ "$s" == "$m" ]] && { found=1; break; }
+    done
+    (( found )) || unmanaged+=("$s")
+  done
+
+  if [[ ${#unmanaged[@]} -eq 0 ]]; then
+    info "live 의 모든 ipset 이 이미 관리 중입니다. 추가할 set 없음."
+    return 0
+  fi
+
+  info ""
+  info "${C_BLD}=== 미관리 ipset 감지 ===${C_RST}"
+  info "  live 에 관리되지 않는 set ${#unmanaged[@]}개 발견:"
+  info ""
+
+  local selected
+  selected=$(checkbox_menu "관리 대상에 추가할 ipset 선택:" "${unmanaged[@]}")
+  local -a picked
+  for idx in $selected; do
+    picked+=("${unmanaged[$idx]}")
+  done
+
+  if [[ ${#picked[@]} -eq 0 ]]; then
+    info "선택 없음, 중단."
+    return 0
+  fi
+
+  persist_backup "pre-rescan" >/dev/null || return 1
+
+  # 기존 + 신규 set 이름을 합쳐서 ipset save 필터링 → 전체 재작성
+  local -a combined=()
+  local name
+  for name in "${managed_sets[@]}"; do [[ -n "$name" ]] && combined+=("$name"); done
+  for name in "${picked[@]}"; do combined+=("$name"); done
+
+  local tmp; tmp=$(mktemp)
+  ipset save 2>/dev/null | scope_filter_ipset "${combined[@]}" > "$tmp"
+  if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+    err "ipset save 실패"
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$FW_IPSETS_FILE"
+
+  ok "관리 대상에 추가: ${picked[*]}"
+}
+
 
 # bootstrap_run
 #   config/ 가 이미 있으면 아무것도 안 함.

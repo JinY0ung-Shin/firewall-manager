@@ -108,7 +108,21 @@ sudo ./fw
 sudo ./fw status          # 현재 상태 표시
 sudo ./fw rollback        # 백업 목록 표시
 sudo ./fw rollback 2      # 2번째 최신 백업으로 복원
+sudo ./fw restore         # config 의 규칙을 live 에 재적용 (부팅 자동복원용)
+sudo ./fw rescan          # live의 미관리 ipset 을 관리 대상으로 추가
 sudo ./fw --help          # 도움말
+```
+
+### 다른 서버의 ipset 가져오기
+
+```bash
+# 소스 서버에서
+sudo ipset save team_office team_ci > teams.txt
+scp teams.txt target:/tmp/
+
+# 타겟 서버에서
+sudo ipset restore -! < /tmp/teams.txt     # live 에 복원
+sudo fw rescan                             # 관리 대상으로 추가 (체크박스)
 ```
 
 ## 저장/복원 모델 — 자동 저장

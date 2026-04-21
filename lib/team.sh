@@ -157,6 +157,7 @@ team_menu() {
       "팀 삭제" \
       "멤버 추가" \
       "멤버 삭제" \
+      "외부에서 가져온 ipset 스캔/추가" \
       "뒤로") || return 0
     (( idx < 0 )) && return 0
     case "$idx" in
@@ -164,7 +165,8 @@ team_menu() {
       1) team_delete_interactive ;;
       2) team_add_member_interactive ;;
       3) team_remove_member_interactive ;;
-      4) return 0 ;;
+      4) rescan_run ;;
+      5) return 0 ;;
     esac
     pause
   done
